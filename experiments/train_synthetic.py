@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import torch
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from lgma.accounting import attention_accounting, count_parameters
+from lgma.diagnostics import attention_cosine_similarity, metric_cosine_similarity
+from lgma.synthetic import make_synthetic_batch
+from lgma.transformer import TinyTransformerLM
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train a tiny LM on synthetic tasks.")
+    parser.add_argument("--task", choices=["copy", "reverse", "modular"], default="copy")
+    parser.add_argument("--attention", choices=["mha", "mqa", "gqa", "shared_identity", "lgma"], default="lgma")
+    parser.add_argument("--generator_type", choices=["full", "diagonal", "symmetric"], default="full")
+    parser.add_argument("--num_generators", type=int, default=2)
+    parser.add_argument("--steps", type=int, default=50)
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--seq_len", type=int, default=32)
+    parser.add_argument("--vocab_size", type=int, default=32)
+    parser.add_argument("--d_model", type=int, default=64)
+    parser.add_argument("--num_layers", type=int, default=2)
+    parser.add_argument("--num_heads", type=int, default=4)
+    parser.add_argument("--head_dim", type=int, default=16)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--device", default="cpu")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    torch.manual_seed(0)
+    device = torch.device(args.device)
+    model = TinyTransformerLM(
+        vocab_size=args.vocab_size,
+        d_model=args.d_model,
+        num_layers=args.num_layers,
+        num_heads=args.num_heads,
+        head_dim=args.head_dim,
+        attention_type=args.attention,
+        num_generators=args.num_generators if args.attention == "lgma" else 0,
+        generator_type=args.generator_type,
+        context_length=args.seq_len,
+    ).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+
+    last_loss = None
+    for step in range(args.steps):
+        batch = make_synthetic_batch(
+            args.task,
+            batch_size=args.batch_size,
+            seq_len=args.seq_len,
+            vocab_size=args.vocab_size,
+            device=device,
+        )
+        _, loss = model(batch.input_ids, batch.targets)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+        last_loss = float(loss.detach().cpu())
+        if step == 0 or (step + 1) == args.steps:
+            print(json.dumps({"step": step + 1, "loss": last_loss}))
+
+    first_attn = model.first_attention
+    report = {
+        "task": args.task,
+        "attention": args.attention,
+        "parameters": count_parameters(model),
+        "attention_accounting": attention_accounting(
+            first_attn, sequence_length=args.seq_len, batch_size=args.batch_size
+        ).__dict__,
+        "final_loss": last_loss,
+    }
+    with torch.no_grad():
+        batch = make_synthetic_batch(
+            args.task, args.batch_size, args.seq_len, args.vocab_size, device=device
+        )
+        x = model.blocks[0].norm1(
+            model.token_embedding(batch.input_ids)
+            + model.position_embedding(torch.arange(args.seq_len, device=device))[None, :, :]
+        )
+        result = first_attn(x, need_weights=True)
+        attn = result[1]
+        report["attention_diversity_mean_cosine"] = float(attention_cosine_similarity(attn).mean())
+        if hasattr(first_attn, "compute_metrics"):
+            report["metric_diversity_mean_cosine"] = float(
+                metric_cosine_similarity(first_attn.compute_metrics()).mean()
+            )
+    print(json.dumps(report, indent=2))
+
+
+if __name__ == "__main__":
+    main()

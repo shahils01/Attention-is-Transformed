@@ -1,0 +1,10 @@
+{
+  "attention_type": "mha",
+  "d_model": 128,
+  "num_layers": 4,
+  "num_heads": 8,
+  "head_dim": 16,
+  "num_generators": 0,
+  "generator_type": "full",
+  "context_length": 128
+}
