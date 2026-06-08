@@ -57,6 +57,23 @@ python experiments/train_synthetic.py --task previous --attention lgma --causal 
 python experiments/train_synthetic.py --task cumsum_mod --attention mha --causal --steps 100
 ```
 
+LGMA head diversity can be encouraged with wider head-coordinate initialization
+and an optional metric-diversity regularizer:
+
+```bash
+python experiments/train_synthetic.py --task reverse --attention lgma --steps 2000 \
+  --theta_init_scale 0.25 --generator_init_scale 0.1 \
+  --metric_diversity_weight 1e-3
+
+python experiments/train_synthetic.py --task reverse --attention lgma --steps 2000 \
+  --theta_init_scale 0.5 --generator_init_scale 0.2 \
+  --metric_diversity_weight 1e-2 --metric_diversity_squared
+```
+
+By default, the metric-diversity regularizer compares metric deviations
+`M_h - I`, not full `M_h`, because full-metric cosine is dominated by the
+shared identity component early in training.
+
 `experiments/train_tinystories.py` is intentionally dependency-light. It expects
 a plain text file and trains a small character-level decoder-only language model:
 

@@ -29,6 +29,8 @@ def build_attention(
     dropout: float = 0.0,
     causal: bool = True,
     num_kv_heads: int | None = None,
+    theta_init_scale: float = 0.02,
+    generator_init_scale: float = 0.02,
 ) -> nn.Module:
     if attention_type in {"mha", "reduced_mha"}:
         return StandardMultiheadAttention(
@@ -76,6 +78,8 @@ def build_attention(
             dropout=dropout,
             generator_type=generator_type,
             causal=causal,
+            theta_init_scale=theta_init_scale,
+            generator_init_scale=generator_init_scale,
         )
     raise ValueError(f"unsupported attention_type: {attention_type}")
 
@@ -93,6 +97,8 @@ class TransformerBlock(nn.Module):
         mlp_ratio: int = 4,
         causal: bool = True,
         num_kv_heads: int | None = None,
+        theta_init_scale: float = 0.02,
+        generator_init_scale: float = 0.02,
     ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
@@ -106,6 +112,8 @@ class TransformerBlock(nn.Module):
             dropout=dropout,
             causal=causal,
             num_kv_heads=num_kv_heads,
+            theta_init_scale=theta_init_scale,
+            generator_init_scale=generator_init_scale,
         )
         self.norm2 = nn.LayerNorm(d_model)
         hidden = mlp_ratio * d_model
@@ -137,6 +145,8 @@ class TinyTransformerLM(nn.Module):
         dropout: float = 0.0,
         num_kv_heads: int | None = None,
         causal: bool = True,
+        theta_init_scale: float = 0.02,
+        generator_init_scale: float = 0.02,
     ) -> None:
         super().__init__()
         if vocab_size <= 0:
@@ -160,6 +170,8 @@ class TinyTransformerLM(nn.Module):
                     dropout=dropout,
                     causal=causal,
                     num_kv_heads=num_kv_heads,
+                    theta_init_scale=theta_init_scale,
+                    generator_init_scale=generator_init_scale,
                 )
                 for _ in range(num_layers)
             ]

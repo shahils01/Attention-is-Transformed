@@ -174,3 +174,36 @@ def test_stabilized_generators_are_trace_zero():
     )
     traces = layer.effective_generators().diagonal(dim1=-2, dim2=-1).sum(dim=-1)
     assert torch.allclose(traces, torch.zeros_like(traces), atol=1e-7)
+
+
+def test_theta_init_scale_sets_head_coordinate_norms():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=4,
+        head_dim=4,
+        num_generators=3,
+        theta_init_scale=0.25,
+    )
+    norms = layer.theta.norm(dim=-1)
+    assert torch.allclose(norms, torch.full_like(norms, 0.25), atol=1e-6)
+
+
+def test_generator_init_scale_changes_generator_std():
+    torch.manual_seed(0)
+    small = LieGeneratedMetricAttention(
+        16,
+        num_heads=4,
+        head_dim=4,
+        num_generators=32,
+        generator_init_scale=0.01,
+    )
+    torch.manual_seed(0)
+    large = LieGeneratedMetricAttention(
+        16,
+        num_heads=4,
+        head_dim=4,
+        num_generators=32,
+        generator_init_scale=0.2,
+    )
+    assert large.generators.std() > small.generators.std()

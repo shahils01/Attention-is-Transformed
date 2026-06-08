@@ -35,6 +35,8 @@ class LieGeneratedMetricAttention(nn.Module):
         use_sdpa: bool = True,
         causal: bool = False,
         stabilize_generators: bool = True,
+        theta_init_scale: float = 0.02,
+        generator_init_scale: float = 0.02,
     ) -> None:
         super().__init__()
         if d_model <= 0 or num_heads <= 0 or head_dim <= 0 or num_generators <= 0:
@@ -51,6 +53,8 @@ class LieGeneratedMetricAttention(nn.Module):
         self.use_sdpa = use_sdpa
         self.causal = causal
         self.stabilize_generators = stabilize_generators
+        self.theta_init_scale = theta_init_scale
+        self.generator_init_scale = generator_init_scale
 
         self.q_proj = nn.Linear(d_model, head_dim, bias=bias)
         self.k_proj = nn.Linear(d_model, head_dim, bias=bias)
@@ -77,9 +81,19 @@ class LieGeneratedMetricAttention(nn.Module):
             nn.init.zeros_(self.v_proj.bias)
             nn.init.zeros_(self.out_proj.bias)
 
-        generator_std = 0.02 / math.sqrt(self.head_dim)
+        generator_std = self.generator_init_scale / math.sqrt(self.head_dim)
         nn.init.normal_(self.generators, mean=0.0, std=generator_std)
-        nn.init.normal_(self.theta, mean=0.0, std=0.02)
+        self._init_theta()
+
+    def _init_theta(self) -> None:
+        if self.theta_init_scale <= 0:
+            nn.init.zeros_(self.theta)
+            return
+
+        with torch.no_grad():
+            directions = torch.randn_like(self.theta)
+            directions = directions / directions.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+            self.theta.copy_(directions * self.theta_init_scale)
 
     def _dense_generators(self) -> torch.Tensor:
         if self.generator_type == "diagonal":

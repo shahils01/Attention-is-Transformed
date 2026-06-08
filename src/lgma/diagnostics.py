@@ -18,6 +18,14 @@ def metric_cosine_similarity(metrics: torch.Tensor, eps: float = 1e-8) -> torch.
     return flat @ flat.transpose(0, 1)
 
 
+def metric_delta_cosine_similarity(metrics: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Pairwise cosine similarity after removing the shared identity metric."""
+    if metrics.ndim != 3 or metrics.shape[-1] != metrics.shape[-2]:
+        raise ValueError("metrics must have shape (heads, dim, dim)")
+    eye = torch.eye(metrics.shape[-1], device=metrics.device, dtype=metrics.dtype)
+    return metric_cosine_similarity(metrics - eye[None, :, :], eps=eps)
+
+
 def attention_cosine_similarity(attn: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Pairwise cosine similarity for attention maps shaped (batch, heads, T, S)."""
     if attn.ndim != 4:
@@ -71,6 +79,29 @@ def mean_off_diagonal(similarity: torch.Tensor) -> torch.Tensor:
     size = similarity.shape[0]
     mask = ~torch.eye(size, device=similarity.device, dtype=torch.bool)
     return similarity[mask].mean()
+
+
+def off_diagonal_squared_mean(similarity: torch.Tensor) -> torch.Tensor:
+    if similarity.ndim != 2 or similarity.shape[0] != similarity.shape[1]:
+        raise ValueError("similarity must be square")
+    size = similarity.shape[0]
+    mask = ~torch.eye(size, device=similarity.device, dtype=torch.bool)
+    return similarity[mask].pow(2).mean()
+
+
+def metric_diversity_loss(
+    metrics: torch.Tensor,
+    squared: bool = False,
+    use_delta: bool = True,
+) -> torch.Tensor:
+    similarity = (
+        metric_delta_cosine_similarity(metrics)
+        if use_delta
+        else metric_cosine_similarity(metrics)
+    )
+    if squared:
+        return off_diagonal_squared_mean(similarity)
+    return mean_off_diagonal(similarity)
 
 
 def pairwise_attention_kl(attn: torch.Tensor) -> torch.Tensor:

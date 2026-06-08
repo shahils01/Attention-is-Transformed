@@ -12,6 +12,8 @@ from lgma.baselines import GroupedQueryAttention, StandardMultiheadAttention
 from lgma.diagnostics import (
     attention_cosine_similarity,
     attention_entropy,
+    metric_delta_cosine_similarity,
+    metric_diversity_loss,
     metric_condition_number,
     metric_cosine_similarity,
 )
@@ -47,6 +49,31 @@ def test_metric_condition_number_is_finite_for_identity_metrics():
     metrics = torch.eye(4).expand(3, 4, 4)
     cond = metric_condition_number(metrics)
     assert torch.allclose(cond, torch.ones_like(cond))
+
+
+def test_metric_diversity_loss_uses_off_diagonal_terms():
+    metrics = torch.stack(
+        [
+            torch.eye(2),
+            torch.tensor([[1.0, 0.0], [0.0, -1.0]]),
+        ]
+    )
+    assert torch.allclose(metric_diversity_loss(metrics), torch.tensor(0.0))
+    assert torch.allclose(metric_diversity_loss(metrics, squared=True), torch.tensor(0.0))
+
+
+def test_metric_delta_similarity_removes_identity_component():
+    identity = torch.eye(2)
+    metrics = torch.stack(
+        [
+            identity + torch.tensor([[0.1, 0.0], [0.0, 0.0]]),
+            identity + torch.tensor([[0.0, 0.0], [0.0, 0.1]]),
+        ]
+    )
+    full_sim = metric_cosine_similarity(metrics)
+    delta_sim = metric_delta_cosine_similarity(metrics)
+    assert full_sim[0, 1] > 0.9
+    assert torch.allclose(delta_sim[0, 1], torch.tensor(0.0))
 
 
 def test_accounting_matches_hand_computed_lgma_counts():
