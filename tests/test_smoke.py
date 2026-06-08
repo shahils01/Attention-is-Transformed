@@ -161,3 +161,82 @@ def test_train_tinystories_smoke_runs_for_one_step(tmp_path):
         train_tinystories.main()
     finally:
         sys.argv = old_argv
+
+
+def test_tinystories_eval_and_generation_helpers_load_checkpoint(tmp_path):
+    import sys
+
+    sys.path.insert(0, str(ROOT / "experiments"))
+    from tinystories_runtime import (
+        build_tokenizer,
+        evaluate_loss,
+        generate_text,
+        load_tinystories_checkpoint,
+    )
+
+    data_path = tmp_path / "tiny.txt"
+    text = "once upon a time there was a small model. " * 20
+    data_path.write_text(text, encoding="utf-8")
+    tokenizer = build_tokenizer(text, None)
+    config = {
+        "d_model": 32,
+        "num_layers": 1,
+        "num_heads": 2,
+        "head_dim": 8,
+        "attention_type": "lgma",
+        "num_generators": 2,
+        "generator_type": "full",
+        "context_length": 8,
+        "dropout": 0.0,
+        "num_kv_heads": None,
+        "causal": True,
+        "theta_init_scale": 0.02,
+        "generator_init_scale": 0.02,
+        "base_dim": None,
+        "value_dim": None,
+        "num_base_heads": 1,
+        "metric_mode": "exp",
+        "metric_beta": 1.0,
+        "theta_init": "random_sphere",
+        "logit_scale_mode": "sqrt_dim",
+        "learn_head_temperature": False,
+        "value_transform": "none",
+    }
+    model = TinyTransformerLM(vocab_size=tokenizer.vocab_size, **config)
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    torch.save(
+        {
+            "step": 3,
+            "model_state": model.state_dict(),
+            "model_config": config,
+            "args": {"data_path": str(data_path), "val_data_path": None},
+        },
+        checkpoint_path,
+    )
+
+    loaded_model, loaded_tokenizer, train_encoded, val_encoded, loaded_config, step = (
+        load_tinystories_checkpoint(checkpoint_path, torch.device("cpu"))
+    )
+    loss, perplexity = evaluate_loss(
+        loaded_model,
+        val_encoded,
+        batch_size=2,
+        seq_len=int(loaded_config["context_length"]),
+        device=torch.device("cpu"),
+        eval_batches=1,
+    )
+    generated = generate_text(
+        loaded_model,
+        loaded_tokenizer,
+        prompt="once",
+        max_new_tokens=4,
+        temperature=1.0,
+        top_k=5,
+        device=torch.device("cpu"),
+    )
+
+    assert step == 3
+    assert train_encoded.numel() == val_encoded.numel()
+    assert loss > 0
+    assert perplexity > 1
+    assert generated.startswith("once")

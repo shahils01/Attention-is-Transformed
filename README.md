@@ -168,6 +168,31 @@ python experiments/train_tinystories.py \
   --resume_checkpoint $SCRATCH/lgma_runs/tinystories_lgma_bf16/checkpoint_step_5000.pt
 ```
 
+Evaluate a saved TinyStories checkpoint:
+
+```bash
+python experiments/eval_tinystories.py \
+  --checkpoint $SCRATCH/lgma_runs/tinystories_lgma_bf16/checkpoint_final.pt \
+  --data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-valid.txt \
+  --device cuda \
+  --eval_batches 100
+```
+
+Sample from the trained character-level network interactively:
+
+```bash
+python experiments/chat_tinystories.py \
+  --checkpoint $SCRATCH/lgma_runs/tinystories_lgma_bf16/checkpoint_final.pt \
+  --data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-valid.txt \
+  --device cuda
+```
+
+This is not an instruction-tuned chatbot; it is a character-level language
+model. The "chat" script prompts for text and samples a continuation from the
+trained network.
+
 For multi-A100 DDP, launch with `torchrun`. The runner automatically enables
 DDP when `WORLD_SIZE > 1`; rank 0 writes logs/checkpoints/reports.
 
