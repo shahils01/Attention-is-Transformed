@@ -17,8 +17,12 @@ def default_data_dir() -> Path:
 def configure_hf_cache(cache_dir: Path | None) -> None:
     if cache_dir is None:
         return
-    os.environ.setdefault("HF_HOME", str(cache_dir))
-    os.environ.setdefault("HF_DATASETS_CACHE", str(cache_dir / "datasets"))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "datasets").mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HOME"] = str(cache_dir)
+    os.environ["HF_DATASETS_CACHE"] = str(cache_dir / "datasets")
+    print(f"HF_HOME={os.environ['HF_HOME']}")
+    print(f"HF_DATASETS_CACHE={os.environ['HF_DATASETS_CACHE']}")
 
 
 def require_datasets():
@@ -61,7 +65,13 @@ def main() -> None:
     output_name = args.output_name or f"train_{args.rows}.txt"
     output_path = args.output_dir / output_name
 
-    dataset = load_dataset("allenai/c4", "en", split="train", streaming=True)
+    dataset = load_dataset(
+        "allenai/c4",
+        "en",
+        split="train",
+        streaming=True,
+        cache_dir=str(args.cache_dir) if args.cache_dir is not None else None,
+    )
     written = 0
     with output_path.open("w", encoding="utf-8") as handle:
         for row in itertools.islice(dataset, args.rows):

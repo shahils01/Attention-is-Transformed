@@ -16,8 +16,12 @@ def default_data_dir() -> Path:
 def configure_hf_cache(cache_dir: Path | None) -> None:
     if cache_dir is None:
         return
-    os.environ.setdefault("HF_HOME", str(cache_dir))
-    os.environ.setdefault("HF_DATASETS_CACHE", str(cache_dir / "datasets"))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "datasets").mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HOME"] = str(cache_dir)
+    os.environ["HF_DATASETS_CACHE"] = str(cache_dir / "datasets")
+    print(f"HF_HOME={os.environ['HF_HOME']}")
+    print(f"HF_DATASETS_CACHE={os.environ['HF_DATASETS_CACHE']}")
 
 
 def require_datasets():
@@ -67,7 +71,11 @@ def main() -> None:
     args = parse_args()
     configure_hf_cache(args.cache_dir)
     load_dataset = require_datasets()
-    dataset = load_dataset("Salesforce/wikitext", "wikitext-103-v1")
+    dataset = load_dataset(
+        "Salesforce/wikitext",
+        "wikitext-103-v1",
+        cache_dir=str(args.cache_dir) if args.cache_dir is not None else None,
+    )
     for split in args.splits:
         write_split(dataset[split], args.output_dir / f"{split}.txt")
     print(f"done: {args.output_dir}")
