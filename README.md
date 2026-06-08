@@ -167,3 +167,26 @@ python experiments/train_tinystories.py \
   --output_dir $SCRATCH/lgma_runs/tinystories_lgma_bf16 \
   --resume_checkpoint $SCRATCH/lgma_runs/tinystories_lgma_bf16/checkpoint_step_5000.pt
 ```
+
+For multi-A100 DDP, launch with `torchrun`. The runner automatically enables
+DDP when `WORLD_SIZE > 1`; rank 0 writes logs/checkpoints/reports.
+
+```bash
+torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
+  --data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-valid.txt \
+  --attention lgma \
+  --device cuda \
+  --precision bf16 \
+  --batch_size 64 \
+  --grad_accum_steps 4 \
+  --steps 50000 \
+  --log_every 100 \
+  --eval_every 1000 \
+  --save_every 5000 \
+  --output_dir $SCRATCH/lgma_runs/tinystories_lgma_ddp4_bf16
+```
+
+For Slurm multi-GPU jobs, use the same script under `srun` or `torchrun`
+according to the Palmetto job template. Disable auto-DDP with `--no_ddp` for
+single-process debugging.

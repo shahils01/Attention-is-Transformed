@@ -37,16 +37,38 @@ class LieGeneratedMetricAttention(nn.Module):
         stabilize_generators: bool = True,
         theta_init_scale: float = 0.02,
         generator_init_scale: float = 0.02,
+        base_dim: int | None = None,
+        value_dim: int | None = None,
+        metric_mode: str = "exp",
+        metric_beta: float = 1.0,
+        theta_init: str = "random_sphere",
+        logit_scale_mode: str = "sqrt_dim",
+        learn_head_temperature: bool = False,
+        value_transform: str = "none",
     ) -> None:
         super().__init__()
         if d_model <= 0 or num_heads <= 0 or head_dim <= 0 or num_generators <= 0:
             raise ValueError("d_model, num_heads, head_dim, and num_generators must be positive")
         if generator_type not in {"full", "diagonal", "symmetric"}:
             raise ValueError(f"unsupported generator_type: {generator_type}")
+        if metric_mode not in {"exp", "residual", "unconstrained"}:
+            raise ValueError(f"unsupported metric_mode: {metric_mode}")
+        if theta_init not in {"random_sphere", "circle"}:
+            raise ValueError(f"unsupported theta_init: {theta_init}")
+        if logit_scale_mode not in {"sqrt_dim", "rms_metric"}:
+            raise ValueError(f"unsupported logit_scale_mode: {logit_scale_mode}")
+        if value_transform not in {"none", "diag"}:
+            raise ValueError(f"unsupported value_transform: {value_transform}")
+        if metric_mode == "unconstrained" and generator_type == "diagonal":
+            raise ValueError("unconstrained metric_mode requires dense metrics")
 
         self.d_model = d_model
         self.num_heads = num_heads
         self.head_dim = head_dim
+        self.base_dim = base_dim if base_dim is not None else head_dim
+        self.value_dim = value_dim if value_dim is not None else head_dim
+        if self.base_dim <= 0 or self.value_dim <= 0:
+            raise ValueError("base_dim and value_dim must be positive")
         self.num_generators = num_generators
         self.dropout = dropout
         self.generator_type = generator_type
@@ -55,18 +77,31 @@ class LieGeneratedMetricAttention(nn.Module):
         self.stabilize_generators = stabilize_generators
         self.theta_init_scale = theta_init_scale
         self.generator_init_scale = generator_init_scale
+        self.metric_mode = metric_mode
+        self.metric_beta = metric_beta
+        self.theta_init = theta_init
+        self.logit_scale_mode = logit_scale_mode
+        self.learn_head_temperature = learn_head_temperature
+        self.value_transform = value_transform
 
-        self.q_proj = nn.Linear(d_model, head_dim, bias=bias)
-        self.k_proj = nn.Linear(d_model, head_dim, bias=bias)
-        self.v_proj = nn.Linear(d_model, head_dim, bias=bias)
-        self.out_proj = nn.Linear(num_heads * head_dim, d_model, bias=bias)
+        self.q_proj = nn.Linear(d_model, self.base_dim, bias=bias)
+        self.k_proj = nn.Linear(d_model, self.base_dim, bias=bias)
+        self.v_proj = nn.Linear(d_model, self.value_dim, bias=bias)
+        self.out_proj = nn.Linear(num_heads * self.value_dim, d_model, bias=bias)
         self.attn_dropout = nn.Dropout(dropout)
 
-        if generator_type == "diagonal":
-            self.generators = nn.Parameter(torch.empty(num_generators, head_dim))
+        if metric_mode == "unconstrained":
+            self.raw_metrics = nn.Parameter(torch.empty(num_heads, self.base_dim, self.base_dim))
+        elif generator_type == "diagonal":
+            self.generators = nn.Parameter(torch.empty(num_generators, self.base_dim))
         else:
-            self.generators = nn.Parameter(torch.empty(num_generators, head_dim, head_dim))
-        self.theta = nn.Parameter(torch.empty(num_heads, num_generators))
+            self.generators = nn.Parameter(torch.empty(num_generators, self.base_dim, self.base_dim))
+        if metric_mode != "unconstrained":
+            self.theta = nn.Parameter(torch.empty(num_heads, num_generators))
+        if learn_head_temperature:
+            self.head_logit_scale = nn.Parameter(torch.ones(num_heads))
+        if value_transform == "diag":
+            self.value_scale = nn.Parameter(torch.ones(num_heads, self.value_dim))
 
         self.reset_parameters()
 
@@ -81,9 +116,16 @@ class LieGeneratedMetricAttention(nn.Module):
             nn.init.zeros_(self.v_proj.bias)
             nn.init.zeros_(self.out_proj.bias)
 
-        generator_std = self.generator_init_scale / math.sqrt(self.head_dim)
-        nn.init.normal_(self.generators, mean=0.0, std=generator_std)
-        self._init_theta()
+        if self.metric_mode == "unconstrained":
+            nn.init.zeros_(self.raw_metrics)
+        else:
+            generator_std = self.generator_init_scale / math.sqrt(self.base_dim)
+            nn.init.normal_(self.generators, mean=0.0, std=generator_std)
+            self._init_theta()
+        if hasattr(self, "head_logit_scale"):
+            nn.init.ones_(self.head_logit_scale)
+        if hasattr(self, "value_scale"):
+            nn.init.ones_(self.value_scale)
 
     def _init_theta(self) -> None:
         if self.theta_init_scale <= 0:
@@ -91,7 +133,27 @@ class LieGeneratedMetricAttention(nn.Module):
             return
 
         with torch.no_grad():
-            directions = torch.randn_like(self.theta)
+            if self.theta_init == "circle" and self.num_generators >= 2:
+                angles = torch.linspace(
+                    0,
+                    2 * math.pi,
+                    self.num_heads + 1,
+                    device=self.theta.device,
+                    dtype=self.theta.dtype,
+                )[:-1]
+                directions = torch.zeros_like(self.theta)
+                directions[:, 0] = torch.cos(angles)
+                directions[:, 1] = torch.sin(angles)
+                if self.num_generators > 2:
+                    noise = torch.randn(
+                        self.num_heads,
+                        self.num_generators - 2,
+                        device=self.theta.device,
+                        dtype=self.theta.dtype,
+                    )
+                    directions[:, 2:] = 0.01 * noise
+            else:
+                directions = torch.randn_like(self.theta)
             directions = directions / directions.norm(dim=-1, keepdim=True).clamp_min(1e-8)
             self.theta.copy_(directions * self.theta_init_scale)
 
@@ -114,15 +176,30 @@ class LieGeneratedMetricAttention(nn.Module):
         return generators - (trace[..., None, None] / dim) * eye
 
     def compute_metrics(self) -> torch.Tensor:
+        if self.metric_mode == "unconstrained":
+            eye = torch.eye(self.base_dim, device=self.raw_metrics.device, dtype=self.raw_metrics.dtype)
+            return eye[None, :, :] + self.metric_beta * self.raw_metrics
+
         if self.generator_type == "diagonal":
             diagonal = torch.einsum("hm,md->hd", self.theta, self.generators)
+            diagonal = self.metric_beta * diagonal
+            if self.metric_mode == "residual":
+                return torch.diag_embed(1.0 + diagonal)
             scale = torch.exp(diagonal)
             return torch.diag_embed(scale)
 
         generators = self._dense_generators()
         head_generators = torch.einsum("hm,mde->hde", self.theta, generators)
+        head_generators = self.metric_beta * head_generators
         if self.generator_type == "symmetric":
             head_generators = 0.5 * (head_generators + head_generators.transpose(-1, -2))
+        if self.metric_mode == "residual":
+            eye = torch.eye(
+                self.base_dim,
+                device=head_generators.device,
+                dtype=head_generators.dtype,
+            )
+            return eye[None, :, :] + head_generators
         metrics = torch.stack(
             [torch.linalg.matrix_exp(generator.float()) for generator in head_generators],
             dim=0,
@@ -131,18 +208,58 @@ class LieGeneratedMetricAttention(nn.Module):
 
     def effective_generators(self) -> torch.Tensor:
         """Return dense stabilized generator basis for diagnostics."""
+        if self.metric_mode == "unconstrained":
+            return self.raw_metrics
         return self._dense_generators()
 
     def _project(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.q_proj(x), self.k_proj(x), self.v_proj(x)
 
     def _apply_metric_to_queries(self, q: torch.Tensor) -> torch.Tensor:
-        if self.generator_type == "diagonal":
+        if self.generator_type == "diagonal" and self.metric_mode != "unconstrained":
             diagonal = torch.einsum("hm,md->hd", self.theta, self.generators)
-            scale = torch.exp(diagonal)
+            diagonal = self.metric_beta * diagonal
+            scale = 1.0 + diagonal if self.metric_mode == "residual" else torch.exp(diagonal)
             return q[:, None, :, :] * scale[None, :, None, :]
         metrics = self.compute_metrics()
         return torch.einsum("btd,hde->bhte", q, metrics)
+
+    def _score_scale(self) -> torch.Tensor | float:
+        if self.logit_scale_mode == "sqrt_dim" and not hasattr(self, "head_logit_scale"):
+            return math.sqrt(self.base_dim)
+
+        device = self.q_proj.weight.device
+        dtype = self.q_proj.weight.dtype
+        denom = torch.full((self.num_heads,), math.sqrt(self.base_dim), device=device, dtype=dtype)
+        if self.logit_scale_mode == "rms_metric":
+            metrics = self.compute_metrics()
+            rms = metrics.float().pow(2).sum(dim=(-1, -2)).div(self.base_dim).sqrt()
+            denom = denom * rms.to(device=device, dtype=dtype).clamp_min(1e-6)
+        if hasattr(self, "head_logit_scale"):
+            denom = denom / self.head_logit_scale.to(device=device, dtype=dtype).clamp_min(1e-6)
+        return denom
+
+    def compute_scores(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        apply_scale: bool = True,
+    ) -> torch.Tensor:
+        q_metric = self._apply_metric_to_queries(q)
+        scores = torch.einsum("bhtd,bsd->bhts", q_metric, k)
+        if not apply_scale:
+            return scores
+        scale = self._score_scale()
+        if isinstance(scale, torch.Tensor):
+            return scores / scale[None, :, None, None].to(device=scores.device, dtype=scores.dtype)
+        return scores / scale
+
+    def _expand_values(self, v: torch.Tensor) -> torch.Tensor:
+        batch, seq_len, _ = v.shape
+        values = v[:, None, :, :].expand(batch, self.num_heads, seq_len, self.value_dim)
+        if hasattr(self, "value_scale"):
+            values = values * self.value_scale[None, :, None, :]
+        return values
 
     def _prepare_additive_mask(
         self,
@@ -204,13 +321,11 @@ class LieGeneratedMetricAttention(nn.Module):
         attn_mask: torch.Tensor | None,
         key_padding_mask: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        q_metric = self._apply_metric_to_queries(q)
-        scores = torch.einsum("bhtd,bsd->bhts", q_metric, k)
-        scores = scores / math.sqrt(self.head_dim)
+        scores = self.compute_scores(q, k, apply_scale=True)
         scores = self._prepare_additive_mask(scores, attn_mask, key_padding_mask)
         attn = torch.softmax(scores, dim=-1)
         attn = self.attn_dropout(attn)
-        out_heads = torch.einsum("bhts,bsd->bhtd", attn, v)
+        out_heads = torch.einsum("bhts,bhsd->bhtd", attn, self._expand_values(v))
         return out_heads, attn
 
     def _sdpa_attention(
@@ -223,8 +338,16 @@ class LieGeneratedMetricAttention(nn.Module):
     ) -> torch.Tensor:
         batch, seq_len, _ = q.shape
         q_metric = self._apply_metric_to_queries(q)
-        k_expanded = k[:, None, :, :].expand(batch, self.num_heads, seq_len, self.head_dim)
-        v_expanded = v[:, None, :, :].expand(batch, self.num_heads, seq_len, self.head_dim)
+        scale = self._score_scale()
+        if isinstance(scale, torch.Tensor):
+            q_metric = q_metric / scale[None, :, None, None].to(
+                device=q_metric.device, dtype=q_metric.dtype
+            )
+            sdpa_scale = 1.0
+        else:
+            sdpa_scale = 1.0 / scale
+        k_expanded = k[:, None, :, :].expand(batch, self.num_heads, seq_len, self.base_dim)
+        v_expanded = self._expand_values(v)
 
         sdpa_mask = self._prepare_sdpa_mask(attn_mask, q.dtype, q.device)
         if key_padding_mask is not None:
@@ -250,6 +373,7 @@ class LieGeneratedMetricAttention(nn.Module):
             attn_mask=sdpa_mask,
             dropout_p=dropout_p,
             is_causal=self.causal and sdpa_mask is None,
+            scale=sdpa_scale,
         )
 
     @staticmethod
@@ -298,7 +422,7 @@ class LieGeneratedMetricAttention(nn.Module):
 
         batch, _, seq_len, _ = out_heads.shape
         out_heads = out_heads.transpose(1, 2).contiguous()
-        out_heads = out_heads.view(batch, seq_len, self.num_heads * self.head_dim)
+        out_heads = out_heads.view(batch, seq_len, self.num_heads * self.value_dim)
         out = self.out_proj(out_heads)
         if need_weights:
             if attn is None:

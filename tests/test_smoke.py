@@ -49,9 +49,9 @@ def test_multi_relation_targets_apply_selected_relation():
         assert torch.equal(target_body, expected)
 
 
-def test_tiny_lm_forward_loss_for_mha_and_lgma():
+def test_tiny_lm_forward_loss_for_attention_variants():
     torch.manual_seed(0)
-    for attention_type in ("mha", "lgma"):
+    for attention_type in ("mha", "lgma", "lgma_v2", "lgma_residual", "lgma_unconstrained"):
         model = TinyTransformerLM(
             vocab_size=16,
             d_model=32,
@@ -59,7 +59,7 @@ def test_tiny_lm_forward_loss_for_mha_and_lgma():
             num_heads=4,
             head_dim=8,
             attention_type=attention_type,
-            num_generators=2 if attention_type == "lgma" else 0,
+            num_generators=2 if attention_type.startswith("lgma") else 0,
             context_length=8,
         )
         batch = make_synthetic_batch("copy", batch_size=2, seq_len=8, vocab_size=16)
@@ -86,7 +86,7 @@ def test_train_synthetic_smoke_runs_for_one_step():
         "--task",
         "copy",
         "--attention",
-        "lgma",
+        "lgma_v2",
         "--steps",
         "1",
         "--batch_size",
@@ -147,6 +147,8 @@ def test_train_tinystories_smoke_runs_for_one_step(tmp_path):
         "8",
         "--num_generators",
         "2",
+        "--diagnostic_every",
+        "1",
     ]
     try:
         train_tinystories.main()

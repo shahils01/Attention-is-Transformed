@@ -16,7 +16,25 @@ from lgma.baselines import (
     StandardMultiheadAttention,
 )
 
-AttentionType = Literal["mha", "reduced_mha", "mqa", "gqa", "shared_identity", "lgma"]
+AttentionType = Literal[
+    "mha",
+    "reduced_mha",
+    "mqa",
+    "gqa",
+    "shared_identity",
+    "lgma",
+    "lgma_v2",
+    "lgma_residual",
+    "lgma_unconstrained",
+    "lgma_value_diag",
+]
+LGMA_ATTENTION_TYPES = {
+    "lgma",
+    "lgma_v2",
+    "lgma_residual",
+    "lgma_unconstrained",
+    "lgma_value_diag",
+}
 
 
 def build_attention(
@@ -31,6 +49,14 @@ def build_attention(
     num_kv_heads: int | None = None,
     theta_init_scale: float = 0.02,
     generator_init_scale: float = 0.02,
+    base_dim: int | None = None,
+    value_dim: int | None = None,
+    metric_mode: str = "exp",
+    metric_beta: float = 1.0,
+    theta_init: str = "random_sphere",
+    logit_scale_mode: str = "sqrt_dim",
+    learn_head_temperature: bool = False,
+    value_transform: str = "none",
 ) -> nn.Module:
     if attention_type in {"mha", "reduced_mha"}:
         return StandardMultiheadAttention(
@@ -67,9 +93,29 @@ def build_attention(
             dropout=dropout,
             causal=causal,
         )
-    if attention_type == "lgma":
+    if attention_type in LGMA_ATTENTION_TYPES:
         if num_generators <= 0:
             raise ValueError("num_generators must be positive for LGMA")
+        if attention_type == "lgma_v2":
+            metric_mode = "exp"
+            logit_scale_mode = "rms_metric"
+            learn_head_temperature = True
+            theta_init = "circle"
+        elif attention_type == "lgma_residual":
+            metric_mode = "residual"
+            logit_scale_mode = "rms_metric"
+            learn_head_temperature = True
+            theta_init = "circle"
+        elif attention_type == "lgma_unconstrained":
+            metric_mode = "unconstrained"
+            logit_scale_mode = "rms_metric"
+            learn_head_temperature = True
+        elif attention_type == "lgma_value_diag":
+            metric_mode = "exp"
+            logit_scale_mode = "rms_metric"
+            learn_head_temperature = True
+            theta_init = "circle"
+            value_transform = "diag"
         return LieGeneratedMetricAttention(
             d_model=d_model,
             num_heads=num_heads,
@@ -80,6 +126,14 @@ def build_attention(
             causal=causal,
             theta_init_scale=theta_init_scale,
             generator_init_scale=generator_init_scale,
+            base_dim=base_dim,
+            value_dim=value_dim,
+            metric_mode=metric_mode,
+            metric_beta=metric_beta,
+            theta_init=theta_init,
+            logit_scale_mode=logit_scale_mode,
+            learn_head_temperature=learn_head_temperature,
+            value_transform=value_transform,
         )
     raise ValueError(f"unsupported attention_type: {attention_type}")
 
@@ -99,6 +153,14 @@ class TransformerBlock(nn.Module):
         num_kv_heads: int | None = None,
         theta_init_scale: float = 0.02,
         generator_init_scale: float = 0.02,
+        base_dim: int | None = None,
+        value_dim: int | None = None,
+        metric_mode: str = "exp",
+        metric_beta: float = 1.0,
+        theta_init: str = "random_sphere",
+        logit_scale_mode: str = "sqrt_dim",
+        learn_head_temperature: bool = False,
+        value_transform: str = "none",
     ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
@@ -114,6 +176,14 @@ class TransformerBlock(nn.Module):
             num_kv_heads=num_kv_heads,
             theta_init_scale=theta_init_scale,
             generator_init_scale=generator_init_scale,
+            base_dim=base_dim,
+            value_dim=value_dim,
+            metric_mode=metric_mode,
+            metric_beta=metric_beta,
+            theta_init=theta_init,
+            logit_scale_mode=logit_scale_mode,
+            learn_head_temperature=learn_head_temperature,
+            value_transform=value_transform,
         )
         self.norm2 = nn.LayerNorm(d_model)
         hidden = mlp_ratio * d_model
@@ -147,6 +217,14 @@ class TinyTransformerLM(nn.Module):
         causal: bool = True,
         theta_init_scale: float = 0.02,
         generator_init_scale: float = 0.02,
+        base_dim: int | None = None,
+        value_dim: int | None = None,
+        metric_mode: str = "exp",
+        metric_beta: float = 1.0,
+        theta_init: str = "random_sphere",
+        logit_scale_mode: str = "sqrt_dim",
+        learn_head_temperature: bool = False,
+        value_transform: str = "none",
     ) -> None:
         super().__init__()
         if vocab_size <= 0:
@@ -172,6 +250,14 @@ class TinyTransformerLM(nn.Module):
                     num_kv_heads=num_kv_heads,
                     theta_init_scale=theta_init_scale,
                     generator_init_scale=generator_init_scale,
+                    base_dim=base_dim,
+                    value_dim=value_dim,
+                    metric_mode=metric_mode,
+                    metric_beta=metric_beta,
+                    theta_init=theta_init,
+                    logit_scale_mode=logit_scale_mode,
+                    learn_head_temperature=learn_head_temperature,
+                    value_transform=value_transform,
                 )
                 for _ in range(num_layers)
             ]

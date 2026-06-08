@@ -4,18 +4,26 @@ from lgma.accounting import (
     attention_accounting,
     count_parameters,
     generator_parameter_count,
+    k_parameter_count,
     kv_cache_bytes_per_token_per_layer,
+    q_parameter_count,
     qkv_parameter_count,
+    v_parameter_count,
 )
 from lgma.attention import LieGeneratedMetricAttention
 from lgma.baselines import GroupedQueryAttention, StandardMultiheadAttention
 from lgma.diagnostics import (
     attention_cosine_similarity,
     attention_entropy,
+    centered_attention_cosine_similarity,
+    induced_bilinear_forms,
+    induced_metric_cosine_similarity,
     metric_delta_cosine_similarity,
     metric_diversity_loss,
+    metric_distance_from_identity,
     metric_condition_number,
     metric_cosine_similarity,
+    score_cosine_similarity,
 )
 
 
@@ -35,6 +43,16 @@ def test_attention_cosine_similarity_is_square_symmetric_with_unit_diagonal():
     assert sim.shape == (4, 4)
     assert torch.allclose(sim, sim.T, atol=1e-6)
     assert torch.allclose(sim.diag(), torch.ones(4), atol=1e-6)
+
+
+def test_centered_attention_and_score_similarity_are_square_symmetric():
+    torch.manual_seed(0)
+    attn = torch.softmax(torch.randn(2, 4, 8, 8), dim=-1)
+    scores = torch.randn(2, 4, 8, 8)
+    for sim in (centered_attention_cosine_similarity(attn), score_cosine_similarity(scores)):
+        assert sim.shape == (4, 4)
+        assert torch.allclose(sim, sim.T, atol=1e-6)
+        assert torch.allclose(sim.diag(), torch.ones(4), atol=1e-6)
 
 
 def test_attention_entropy_is_finite_and_non_negative():
@@ -76,6 +94,27 @@ def test_metric_delta_similarity_removes_identity_component():
     assert torch.allclose(delta_sim[0, 1], torch.tensor(0.0))
 
 
+def test_induced_bilinear_diagnostics_are_square_symmetric():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        d_model=8,
+        num_heads=3,
+        head_dim=4,
+        num_generators=2,
+    )
+    forms = induced_bilinear_forms(layer)
+    sim = induced_metric_cosine_similarity(layer)
+    assert forms.shape == (3, 8, 8)
+    assert sim.shape == (3, 3)
+    assert torch.allclose(sim, sim.T, atol=1e-6)
+    assert torch.allclose(sim.diag(), torch.ones(3), atol=1e-6)
+
+
+def test_metric_distance_from_identity_is_zero_for_identity():
+    metrics = torch.eye(4).expand(3, 4, 4)
+    assert torch.allclose(metric_distance_from_identity(metrics), torch.zeros(3))
+
+
 def test_accounting_matches_hand_computed_lgma_counts():
     layer = LieGeneratedMetricAttention(
         d_model=16,
@@ -86,12 +125,34 @@ def test_accounting_matches_hand_computed_lgma_counts():
         bias=False,
     )
     assert qkv_parameter_count(layer) == 3 * 16 * 4
+    assert q_parameter_count(layer) == 16 * 4
+    assert k_parameter_count(layer) == 16 * 4
+    assert v_parameter_count(layer) == 16 * 4
     assert generator_parameter_count(layer) == 2 * 4 * 4 + 4 * 2
     assert kv_cache_bytes_per_token_per_layer(layer, dtype=torch.float16) == 2 * 4 * 2
     assert count_parameters(layer) > qkv_parameter_count(layer)
     report = attention_accounting(layer, sequence_length=8, batch_size=2)
     assert report.attention_maps == 4
     assert report.attention_score_flops == 2 * 2 * 4 * 8 * 8 * 4
+
+
+def test_lgma_accounting_uses_base_and_value_dimensions():
+    layer = LieGeneratedMetricAttention(
+        d_model=16,
+        num_heads=4,
+        head_dim=4,
+        base_dim=6,
+        value_dim=3,
+        num_generators=2,
+        generator_type="full",
+        bias=False,
+    )
+    assert q_parameter_count(layer) == 16 * 6
+    assert k_parameter_count(layer) == 16 * 6
+    assert v_parameter_count(layer) == 16 * 3
+    assert kv_cache_bytes_per_token_per_layer(layer, dtype=torch.float16) == (6 + 3) * 2
+    report = attention_accounting(layer, sequence_length=8, batch_size=2)
+    assert report.attention_score_flops == 2 * 2 * 4 * 8 * 8 * 6
 
 
 def test_kv_cache_accounting_distinguishes_mha_and_gqa():
