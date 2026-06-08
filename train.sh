@@ -1,0 +1,13 @@
+python experiments/train_tinystories.py \
+  --data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-valid.txt \
+  --attention shared_identity \
+  --device cuda:0 \
+  --precision bf16 \
+  --batch_size 256 \
+  --grad_accum_steps 4 \
+  --steps 50000 \
+  --log_every 100 \
+  --eval_every 1000 \
+  --save_every 5000 \
+  --output_dir /scratch/shahils/lgma_runs/tinystories_shared_identity_bf16
