@@ -35,6 +35,7 @@ from lgma.diagnostics import (
     score_cosine_similarity,
 )
 from lgma.synthetic import CharTokenizer, make_lm_batch
+from lgma.tracking import finish_wandb, init_wandb_run, log_wandb
 from lgma.transformer import LGMA_ATTENTION_TYPES, TinyTransformerLM, load_model_config
 
 
@@ -163,6 +164,31 @@ def parse_args() -> argparse.Namespace:
         "--non_causal",
         action="store_true",
         help="Disable causal masking. Text LM runs are causal by default.",
+    )
+    parser.add_argument(
+        "--wandb_project",
+        default=None,
+        help="Enable Weights & Biases logging to this project.",
+    )
+    parser.add_argument("--wandb_entity", default=None)
+    parser.add_argument("--wandb_run_name", default=None)
+    parser.add_argument("--wandb_group", default=None)
+    parser.add_argument(
+        "--wandb_tags",
+        default=None,
+        help="Comma-separated W&B tags, for example `tinystories,lgma,b2`.",
+    )
+    parser.add_argument(
+        "--wandb_mode",
+        choices=["online", "offline", "disabled"],
+        default="online",
+        help="Use `disabled` to force no W&B logging even if a project is set.",
+    )
+    parser.add_argument(
+        "--wandb_dir",
+        type=Path,
+        default=None,
+        help="Optional W&B run directory. Defaults to output_dir when set.",
     )
     return parser.parse_args()
 
@@ -681,6 +707,34 @@ def main() -> None:
         metrics_path = output_dir / "metrics.jsonl" if output_dir is not None else None
         if output_dir is not None and main_process:
             output_dir.mkdir(parents=True, exist_ok=True)
+        wandb_run = None
+        if main_process:
+            first_attn = unwrap_model(model).first_attention
+            wandb_run = init_wandb_run(
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+                name=args.wandb_run_name,
+                group=args.wandb_group,
+                tags=args.wandb_tags,
+                mode=args.wandb_mode,
+                output_dir=args.wandb_dir or output_dir,
+                config={
+                    "args": vars(args),
+                    "model_config": config,
+                    "effective_attention_config": effective_attention_config(first_attn),
+                    "attention_accounting": attention_accounting(
+                        first_attn,
+                        sequence_length=seq_len,
+                        batch_size=args.batch_size,
+                    ).__dict__,
+                    "parameters": count_parameters(unwrap_model(model)),
+                    "vocab_size": tokenizer.vocab_size,
+                    "train_characters": int(train_encoded.numel()),
+                    "validation_characters": int(val_encoded.numel()),
+                    "distributed": ddp_enabled,
+                    "world_size": world_size,
+                },
+            )
 
         start_step = 0
         if args.resume_checkpoint is not None:
@@ -801,6 +855,7 @@ def main() -> None:
                     )
                 print(json.dumps(payload))
                 write_jsonl(metrics_path, payload)
+                log_wandb(wandb_run, payload, step=step)
                 last_log_time = now
                 last_log_step = step
 
@@ -853,10 +908,15 @@ def main() -> None:
                     config,
                     args,
                 )
+            log_wandb(wandb_run, {"final": report}, step=args.steps)
             print(json.dumps(report, indent=2))
+            finish_wandb(wandb_run)
+            wandb_run = None
         if ddp_enabled:
             dist.barrier()
     finally:
+        if "wandb_run" in locals() and wandb_run is not None:
+            finish_wandb(wandb_run)
         cleanup_distributed(ddp_enabled if "ddp_enabled" in locals() else False)
 
 

@@ -20,6 +20,9 @@ data = [
   "datasets",
   "huggingface_hub",
 ]
+tracking = [
+  "wandb",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

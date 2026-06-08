@@ -29,6 +29,7 @@ from lgma.diagnostics import (
 )
 from lgma.attention import LieGeneratedMetricAttention
 from lgma.synthetic import make_synthetic_batch
+from lgma.tracking import finish_wandb, init_wandb_run, log_wandb
 from lgma.transformer import LGMA_ATTENTION_TYPES, TinyTransformerLM
 
 
@@ -145,6 +146,25 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use causal attention. Default synthetic experiments are non-causal.",
     )
+    parser.add_argument(
+        "--wandb_project",
+        default=None,
+        help="Enable Weights & Biases logging to this project.",
+    )
+    parser.add_argument("--wandb_entity", default=None)
+    parser.add_argument("--wandb_run_name", default=None)
+    parser.add_argument("--wandb_group", default=None)
+    parser.add_argument(
+        "--wandb_tags",
+        default=None,
+        help="Comma-separated W&B tags, for example `synthetic,lgma,b2`.",
+    )
+    parser.add_argument(
+        "--wandb_mode",
+        choices=["online", "offline", "disabled"],
+        default="online",
+    )
+    parser.add_argument("--wandb_dir", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -390,6 +410,26 @@ def main() -> None:
         num_base_heads=args.num_base_heads,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    first_attn = model.first_attention
+    wandb_run = init_wandb_run(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name,
+        group=args.wandb_group,
+        tags=args.wandb_tags,
+        mode=args.wandb_mode,
+        output_dir=args.wandb_dir,
+        config={
+            "args": vars(args),
+            "effective_attention_config": effective_attention_config(first_attn),
+            "attention_accounting": attention_accounting(
+                first_attn,
+                sequence_length=args.seq_len,
+                batch_size=args.batch_size,
+            ).__dict__,
+            "parameters": count_parameters(model),
+        },
+    )
 
     last_loss = None
     last_diversity_loss = 0.0
@@ -447,6 +487,7 @@ def main() -> None:
                     )
                 )
             print(json.dumps(payload))
+            log_wandb(wandb_run, payload, step=step + 1)
 
     first_attn = model.first_attention
     report = {
@@ -512,7 +553,9 @@ def main() -> None:
             args.diagnostic_batches,
         )
     )
+    log_wandb(wandb_run, {"final": report}, step=args.steps)
     print(json.dumps(report, indent=2))
+    finish_wandb(wandb_run)
 
 
 if __name__ == "__main__":
