@@ -136,6 +136,7 @@ class TinyTransformerLM(nn.Module):
         context_length: int = 256,
         dropout: float = 0.0,
         num_kv_heads: int | None = None,
+        causal: bool = True,
     ) -> None:
         super().__init__()
         if vocab_size <= 0:
@@ -143,6 +144,7 @@ class TinyTransformerLM(nn.Module):
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.context_length = context_length
+        self.causal = causal
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.position_embedding = nn.Embedding(context_length, d_model)
         self.drop = nn.Dropout(dropout)
@@ -156,7 +158,7 @@ class TinyTransformerLM(nn.Module):
                     num_generators=num_generators,
                     generator_type=generator_type,
                     dropout=dropout,
-                    causal=True,
+                    causal=causal,
                     num_kv_heads=num_kv_heads,
                 )
                 for _ in range(num_layers)

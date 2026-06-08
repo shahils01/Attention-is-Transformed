@@ -48,6 +48,15 @@ python experiments/train_synthetic.py --task copy --attention lgma --steps 20
 python experiments/train_synthetic.py --task reverse --attention mha --steps 20
 ```
 
+Synthetic experiments are non-causal by default so tasks like reverse and
+future-token modular arithmetic are valid controlled tests. Use `--causal` for
+decoder-style synthetic tasks:
+
+```bash
+python experiments/train_synthetic.py --task previous --attention lgma --causal --steps 100
+python experiments/train_synthetic.py --task cumsum_mod --attention mha --causal --steps 100
+```
+
 `experiments/train_tinystories.py` is intentionally dependency-light. It expects
 a plain text file and trains a small character-level decoder-only language model:
 

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import math
+import warnings
 
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*An output with one or more elements was resized.*",
+    category=UserWarning,
+)
 
 
 def _negative_large(dtype: torch.dtype) -> float:

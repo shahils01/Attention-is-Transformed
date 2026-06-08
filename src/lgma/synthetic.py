@@ -5,7 +5,7 @@ from typing import Literal
 
 import torch
 
-SyntheticTask = Literal["copy", "reverse", "modular"]
+SyntheticTask = Literal["copy", "reverse", "modular", "previous", "cumsum_mod"]
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,29 @@ def make_modular_batch(
     return SyntheticBatch(input_ids=tokens, targets=targets)
 
 
+def make_previous_batch(
+    batch_size: int,
+    seq_len: int,
+    vocab_size: int,
+    device: torch.device | str = "cpu",
+) -> SyntheticBatch:
+    tokens = torch.randint(1, vocab_size, (batch_size, seq_len), device=device)
+    targets = torch.zeros_like(tokens)
+    targets[:, 1:] = tokens[:, :-1]
+    return SyntheticBatch(input_ids=tokens, targets=targets)
+
+
+def make_cumsum_mod_batch(
+    batch_size: int,
+    seq_len: int,
+    vocab_size: int,
+    device: torch.device | str = "cpu",
+) -> SyntheticBatch:
+    tokens = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
+    targets = torch.cumsum(tokens, dim=1) % vocab_size
+    return SyntheticBatch(input_ids=tokens, targets=targets)
+
+
 def make_synthetic_batch(
     task: SyntheticTask,
     batch_size: int,
@@ -59,6 +82,10 @@ def make_synthetic_batch(
         return make_reverse_batch(batch_size, seq_len, vocab_size, device=device)
     if task == "modular":
         return make_modular_batch(batch_size, seq_len, vocab_size, device=device)
+    if task == "previous":
+        return make_previous_batch(batch_size, seq_len, vocab_size, device=device)
+    if task == "cumsum_mod":
+        return make_cumsum_mod_batch(batch_size, seq_len, vocab_size, device=device)
     raise ValueError(f"unsupported synthetic task: {task}")
 
 

@@ -23,3 +23,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+filterwarnings = [
+  "ignore:.*An output with one or more elements was resized.*:UserWarning",
+]

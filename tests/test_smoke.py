@@ -9,11 +9,17 @@ from lgma.transformer import TinyTransformerLM, tiny_lm_from_config
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_synthetic_copy_and_reverse_batches_have_expected_shapes():
-    for task in ("copy", "reverse"):
+def test_synthetic_batches_have_expected_shapes():
+    for task in ("copy", "reverse", "modular", "previous", "cumsum_mod"):
         batch = make_synthetic_batch(task, batch_size=2, seq_len=8, vocab_size=16)
         assert batch.input_ids.shape == (2, 8)
         assert batch.targets.shape == (2, 8)
+
+
+def test_previous_task_is_causal_valid():
+    batch = make_synthetic_batch("previous", batch_size=2, seq_len=8, vocab_size=16)
+    assert torch.equal(batch.targets[:, 0], torch.zeros(2, dtype=batch.targets.dtype))
+    assert torch.equal(batch.targets[:, 1:], batch.input_ids[:, :-1])
 
 
 def test_tiny_lm_forward_loss_for_mha_and_lgma():
