@@ -1,0 +1,16 @@
+python experiments/train_tinystories.py \
+  --data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-valid.txt \
+  --attention lgma_v2 \
+  --device cuda:0 \
+  --precision bf16 \
+  --batch_size 256 \
+  --steps 10000 \
+  --log_every 100 \
+  --eval_every 1000 \
+  --save_every 5000 \
+  --output_dir /scratch/shahils/lgma_runs/tinystories_lgma_v2 \
+  --base_dim 64 \
+  --metric_beta 0.25 \
+  --diagnostic_every 1000 \
+  --diagnostic_batches 2
