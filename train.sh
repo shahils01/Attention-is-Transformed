@@ -1,13 +1,21 @@
 python experiments/train_tinystories.py \
   --data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-train.txt \
   --val_data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-valid.txt \
-  --attention shared_identity \
+  --attention lgma_multibase \
   --device cuda:0 \
-  --precision bf16 \
-  --batch_size 256 \
+  --precision fp32 \
+  --batch_size 512 \
   --grad_accum_steps 4 \
-  --steps 50000 \
+  --steps 500000 \
   --log_every 100 \
   --eval_every 1000 \
   --save_every 5000 \
-  --output_dir /scratch/shahils/lgma_runs/tinystories_shared_identity_bf16
+  --output_dir /scratch/shahils/lgma_runs/tinystories_lgma_multibase_b2_1 \
+  --num_heads 8 \
+  --num_base_heads 2 \
+  --base_dim 32 \
+  --num_generators 8 \
+  --metric_beta 0.25 \
+  --diagnostic_every 1000 \
+  --diagnostic_batches 2 \
+  --context_length 512 
