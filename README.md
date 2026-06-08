@@ -135,3 +135,35 @@ python experiments/train_tinystories.py \
   --metric_diversity_weight 1e-2 \
   --steps 1000
 ```
+
+For longer A100 runs, keep the corpus on CPU and move sampled batches to CUDA:
+
+```bash
+python experiments/train_tinystories.py \
+  --data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-valid.txt \
+  --attention lgma \
+  --device cuda \
+  --precision bf16 \
+  --batch_size 64 \
+  --grad_accum_steps 4 \
+  --steps 50000 \
+  --log_every 100 \
+  --eval_every 1000 \
+  --save_every 5000 \
+  --output_dir $SCRATCH/lgma_runs/tinystories_lgma_bf16
+```
+
+Resume a saved run:
+
+```bash
+python experiments/train_tinystories.py \
+  --data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-valid.txt \
+  --attention lgma \
+  --device cuda \
+  --precision bf16 \
+  --steps 50000 \
+  --output_dir $SCRATCH/lgma_runs/tinystories_lgma_bf16 \
+  --resume_checkpoint $SCRATCH/lgma_runs/tinystories_lgma_bf16/checkpoint_step_5000.pt
+```

@@ -123,7 +123,11 @@ class LieGeneratedMetricAttention(nn.Module):
         head_generators = torch.einsum("hm,mde->hde", self.theta, generators)
         if self.generator_type == "symmetric":
             head_generators = 0.5 * (head_generators + head_generators.transpose(-1, -2))
-        return torch.stack([torch.linalg.matrix_exp(generator) for generator in head_generators], dim=0)
+        metrics = torch.stack(
+            [torch.linalg.matrix_exp(generator.float()) for generator in head_generators],
+            dim=0,
+        )
+        return metrics.to(dtype=head_generators.dtype)
 
     def effective_generators(self) -> torch.Tensor:
         """Return dense stabilized generator basis for diagnostics."""
