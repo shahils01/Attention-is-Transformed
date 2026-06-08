@@ -17,6 +17,7 @@ from lgma.diagnostics import (
     attention_cosine_similarity,
     centered_attention_cosine_similarity,
     grouped_gradient_norms,
+    grouped_similarity_stats,
     induced_bilinear_forms,
     induced_metric_cosine_similarity,
     mean_off_diagonal,
@@ -61,6 +62,8 @@ def parse_args() -> argparse.Namespace:
             "lgma_residual",
             "lgma_unconstrained",
             "lgma_value_diag",
+            "lgma_multibase",
+            "lgma_multibase_value_diag",
         ],
         default="lgma",
     )
@@ -68,6 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_generators", type=int, default=2)
     parser.add_argument("--base_dim", type=int, default=None)
     parser.add_argument("--value_dim", type=int, default=None)
+    parser.add_argument("--num_base_heads", type=int, default=1)
     parser.add_argument("--metric_mode", choices=["exp", "residual", "unconstrained"], default="exp")
     parser.add_argument("--metric_beta", type=float, default=1.0)
     parser.add_argument("--theta_init", choices=["random_sphere", "circle"], default="random_sphere")
@@ -158,6 +162,8 @@ def effective_attention_config(module) -> dict[str, object]:
         "base_dim",
         "value_dim",
         "num_heads",
+        "num_base_heads",
+        "generated_heads_per_base",
         "num_generators",
         "generator_type",
         "metric_mode",
@@ -245,10 +251,42 @@ def attention_diagnostics(
             mean_off_diagonal(centered_similarity)
         ),
     }
+    if hasattr(first_attn, "num_base_heads") and first_attn.num_base_heads > 1:
+        report.update(
+            {
+                f"attention_{key}": float(value)
+                for key, value in grouped_similarity_stats(
+                    attention_similarity,
+                    first_attn.num_base_heads,
+                    first_attn.generated_heads_per_base,
+                ).items()
+            }
+        )
+        report.update(
+            {
+                f"centered_attention_{key}": float(value)
+                for key, value in grouped_similarity_stats(
+                    centered_similarity,
+                    first_attn.num_base_heads,
+                    first_attn.generated_heads_per_base,
+                ).items()
+            }
+        )
     if score_sims:
         score_similarity = torch.stack(score_sims).mean(dim=0)
         report["score_diversity_mean_cosine"] = float(score_similarity.mean())
         report["score_diversity_offdiag_mean_cosine"] = float(mean_off_diagonal(score_similarity))
+        if hasattr(first_attn, "num_base_heads") and first_attn.num_base_heads > 1:
+            report.update(
+                {
+                    f"score_{key}": float(value)
+                    for key, value in grouped_similarity_stats(
+                        score_similarity,
+                        first_attn.num_base_heads,
+                        first_attn.generated_heads_per_base,
+                    ).items()
+                }
+            )
     if hasattr(first_attn, "compute_metrics"):
         metrics = first_attn.compute_metrics()
         metric_similarity = metric_cosine_similarity(metrics)
@@ -269,6 +307,27 @@ def attention_diagnostics(
         report["induced_metric_diversity_offdiag_mean_cosine"] = float(
             mean_off_diagonal(induced_similarity)
         )
+        if hasattr(first_attn, "num_base_heads") and first_attn.num_base_heads > 1:
+            report.update(
+                {
+                    f"metric_{key}": float(value)
+                    for key, value in grouped_similarity_stats(
+                        metric_similarity,
+                        first_attn.num_base_heads,
+                        first_attn.generated_heads_per_base,
+                    ).items()
+                }
+            )
+            report.update(
+                {
+                    f"induced_metric_{key}": float(value)
+                    for key, value in grouped_similarity_stats(
+                        induced_similarity,
+                        first_attn.num_base_heads,
+                        first_attn.generated_heads_per_base,
+                    ).items()
+                }
+            )
     return report
 
 
@@ -328,6 +387,7 @@ def main() -> None:
         logit_scale_mode=args.logit_scale_mode,
         learn_head_temperature=args.learn_head_temperature,
         value_transform=args.value_transform,
+        num_base_heads=args.num_base_heads,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
@@ -397,6 +457,7 @@ def main() -> None:
         "generator_init_scale": args.generator_init_scale,
         "base_dim": args.base_dim,
         "value_dim": args.value_dim,
+        "num_base_heads": args.num_base_heads,
         "metric_mode": args.metric_mode,
         "metric_beta": args.metric_beta,
         "theta_init": args.theta_init,

@@ -27,6 +27,8 @@ AttentionType = Literal[
     "lgma_residual",
     "lgma_unconstrained",
     "lgma_value_diag",
+    "lgma_multibase",
+    "lgma_multibase_value_diag",
 ]
 LGMA_ATTENTION_TYPES = {
     "lgma",
@@ -34,6 +36,8 @@ LGMA_ATTENTION_TYPES = {
     "lgma_residual",
     "lgma_unconstrained",
     "lgma_value_diag",
+    "lgma_multibase",
+    "lgma_multibase_value_diag",
 }
 
 
@@ -57,6 +61,7 @@ def build_attention(
     logit_scale_mode: str = "sqrt_dim",
     learn_head_temperature: bool = False,
     value_transform: str = "none",
+    num_base_heads: int = 1,
 ) -> nn.Module:
     if attention_type in {"mha", "reduced_mha"}:
         return StandardMultiheadAttention(
@@ -116,6 +121,21 @@ def build_attention(
             learn_head_temperature = True
             theta_init = "circle"
             value_transform = "diag"
+        elif attention_type == "lgma_multibase":
+            metric_mode = "exp"
+            logit_scale_mode = "rms_metric"
+            learn_head_temperature = True
+            theta_init = "circle"
+            if num_base_heads == 1:
+                num_base_heads = 2
+        elif attention_type == "lgma_multibase_value_diag":
+            metric_mode = "exp"
+            logit_scale_mode = "rms_metric"
+            learn_head_temperature = True
+            theta_init = "circle"
+            value_transform = "diag"
+            if num_base_heads == 1:
+                num_base_heads = 2
         return LieGeneratedMetricAttention(
             d_model=d_model,
             num_heads=num_heads,
@@ -134,6 +154,7 @@ def build_attention(
             logit_scale_mode=logit_scale_mode,
             learn_head_temperature=learn_head_temperature,
             value_transform=value_transform,
+            num_base_heads=num_base_heads,
         )
     raise ValueError(f"unsupported attention_type: {attention_type}")
 
@@ -161,6 +182,7 @@ class TransformerBlock(nn.Module):
         logit_scale_mode: str = "sqrt_dim",
         learn_head_temperature: bool = False,
         value_transform: str = "none",
+        num_base_heads: int = 1,
     ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
@@ -184,6 +206,7 @@ class TransformerBlock(nn.Module):
             logit_scale_mode=logit_scale_mode,
             learn_head_temperature=learn_head_temperature,
             value_transform=value_transform,
+            num_base_heads=num_base_heads,
         )
         self.norm2 = nn.LayerNorm(d_model)
         hidden = mlp_ratio * d_model
@@ -225,6 +248,7 @@ class TinyTransformerLM(nn.Module):
         logit_scale_mode: str = "sqrt_dim",
         learn_head_temperature: bool = False,
         value_transform: str = "none",
+        num_base_heads: int = 1,
     ) -> None:
         super().__init__()
         if vocab_size <= 0:
@@ -258,6 +282,7 @@ class TinyTransformerLM(nn.Module):
                     logit_scale_mode=logit_scale_mode,
                     learn_head_temperature=learn_head_temperature,
                     value_transform=value_transform,
+                    num_base_heads=num_base_heads,
                 )
                 for _ in range(num_layers)
             ]

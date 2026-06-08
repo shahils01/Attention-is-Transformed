@@ -16,6 +16,7 @@ from lgma.diagnostics import (
     attention_cosine_similarity,
     attention_entropy,
     centered_attention_cosine_similarity,
+    grouped_similarity_stats,
     induced_bilinear_forms,
     induced_metric_cosine_similarity,
     metric_delta_cosine_similarity,
@@ -110,6 +111,33 @@ def test_induced_bilinear_diagnostics_are_square_symmetric():
     assert torch.allclose(sim.diag(), torch.ones(3), atol=1e-6)
 
 
+def test_multibase_induced_bilinear_diagnostics_shape():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        d_model=8,
+        num_heads=4,
+        head_dim=4,
+        base_dim=3,
+        num_generators=2,
+        num_base_heads=2,
+    )
+    forms = induced_bilinear_forms(layer)
+    sim = induced_metric_cosine_similarity(layer)
+    assert forms.shape == (4, 8, 8)
+    assert sim.shape == (4, 4)
+
+
+def test_grouped_similarity_stats_reports_within_and_across_base_means():
+    similarity = torch.eye(4)
+    similarity[0, 1] = similarity[1, 0] = 0.2
+    similarity[2, 3] = similarity[3, 2] = 0.4
+    similarity[:2, 2:] = 0.8
+    similarity[2:, :2] = 0.8
+    stats = grouped_similarity_stats(similarity, num_base_heads=2, generated_heads_per_base=2)
+    assert torch.allclose(stats["within_base_offdiag_mean_cosine"], torch.tensor(0.3))
+    assert torch.allclose(stats["across_base_mean_cosine"], torch.tensor(0.8))
+
+
 def test_metric_distance_from_identity_is_zero_for_identity():
     metrics = torch.eye(4).expand(3, 4, 4)
     assert torch.allclose(metric_distance_from_identity(metrics), torch.zeros(3))
@@ -153,6 +181,29 @@ def test_lgma_accounting_uses_base_and_value_dimensions():
     assert kv_cache_bytes_per_token_per_layer(layer, dtype=torch.float16) == (6 + 3) * 2
     report = attention_accounting(layer, sequence_length=8, batch_size=2)
     assert report.attention_score_flops == 2 * 2 * 4 * 8 * 8 * 6
+
+
+def test_multibase_lgma_accounting_uses_base_count_for_cache():
+    layer = LieGeneratedMetricAttention(
+        d_model=16,
+        num_heads=8,
+        head_dim=4,
+        base_dim=6,
+        value_dim=3,
+        num_generators=2,
+        num_base_heads=2,
+        generator_type="full",
+        bias=False,
+    )
+    assert q_parameter_count(layer) == 16 * 2 * 6
+    assert k_parameter_count(layer) == 16 * 2 * 6
+    assert v_parameter_count(layer) == 16 * 2 * 3
+    assert kv_cache_bytes_per_token_per_layer(layer, dtype=torch.float16) == 2 * (6 + 3) * 2
+    report = attention_accounting(layer, sequence_length=8, batch_size=2)
+    assert report.base_heads == 2
+    assert report.generated_heads_per_base == 4
+    assert report.attention_maps == 8
+    assert report.attention_score_flops == 2 * 2 * 8 * 8 * 8 * 6
 
 
 def test_kv_cache_accounting_distinguishes_mha_and_gqa():

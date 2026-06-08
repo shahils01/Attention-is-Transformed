@@ -45,6 +45,7 @@ class LieGeneratedMetricAttention(nn.Module):
         logit_scale_mode: str = "sqrt_dim",
         learn_head_temperature: bool = False,
         value_transform: str = "none",
+        num_base_heads: int = 1,
     ) -> None:
         super().__init__()
         if d_model <= 0 or num_heads <= 0 or head_dim <= 0 or num_generators <= 0:
@@ -61,9 +62,15 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError(f"unsupported value_transform: {value_transform}")
         if metric_mode == "unconstrained" and generator_type == "diagonal":
             raise ValueError("unconstrained metric_mode requires dense metrics")
+        if num_base_heads <= 0:
+            raise ValueError("num_base_heads must be positive")
+        if num_heads % num_base_heads != 0:
+            raise ValueError("num_heads must be divisible by num_base_heads")
 
         self.d_model = d_model
         self.num_heads = num_heads
+        self.num_base_heads = num_base_heads
+        self.generated_heads_per_base = num_heads // num_base_heads
         self.head_dim = head_dim
         self.base_dim = base_dim if base_dim is not None else head_dim
         self.value_dim = value_dim if value_dim is not None else head_dim
@@ -84,9 +91,9 @@ class LieGeneratedMetricAttention(nn.Module):
         self.learn_head_temperature = learn_head_temperature
         self.value_transform = value_transform
 
-        self.q_proj = nn.Linear(d_model, self.base_dim, bias=bias)
-        self.k_proj = nn.Linear(d_model, self.base_dim, bias=bias)
-        self.v_proj = nn.Linear(d_model, self.value_dim, bias=bias)
+        self.q_proj = nn.Linear(d_model, self.num_base_heads * self.base_dim, bias=bias)
+        self.k_proj = nn.Linear(d_model, self.num_base_heads * self.base_dim, bias=bias)
+        self.v_proj = nn.Linear(d_model, self.num_base_heads * self.value_dim, bias=bias)
         self.out_proj = nn.Linear(num_heads * self.value_dim, d_model, bias=bias)
         self.attn_dropout = nn.Dropout(dropout)
 
@@ -134,13 +141,21 @@ class LieGeneratedMetricAttention(nn.Module):
 
         with torch.no_grad():
             if self.theta_init == "circle" and self.num_generators >= 2:
-                angles = torch.linspace(
-                    0,
-                    2 * math.pi,
-                    self.num_heads + 1,
+                head_ids = torch.arange(
+                    self.num_heads,
                     device=self.theta.device,
                     dtype=self.theta.dtype,
-                )[:-1]
+                )
+                base_ids = torch.div(
+                    head_ids,
+                    self.generated_heads_per_base,
+                    rounding_mode="floor",
+                )
+                generated_ids = head_ids.remainder(self.generated_heads_per_base)
+                angles = (
+                    2 * math.pi * generated_ids / self.generated_heads_per_base
+                    + math.pi * base_ids / max(self.generated_heads_per_base, 1)
+                )
                 directions = torch.zeros_like(self.theta)
                 directions[:, 0] = torch.cos(angles)
                 directions[:, 1] = torch.sin(angles)
@@ -215,14 +230,39 @@ class LieGeneratedMetricAttention(nn.Module):
     def _project(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.q_proj(x), self.k_proj(x), self.v_proj(x)
 
+    def _reshape_base_qk(self, tensor: torch.Tensor) -> torch.Tensor:
+        batch, seq_len, _ = tensor.shape
+        return tensor.view(batch, seq_len, self.num_base_heads, self.base_dim).transpose(1, 2)
+
+    def _reshape_base_values(self, tensor: torch.Tensor) -> torch.Tensor:
+        batch, seq_len, _ = tensor.shape
+        return tensor.view(batch, seq_len, self.num_base_heads, self.value_dim).transpose(1, 2)
+
+    def _metrics_by_base(self) -> torch.Tensor:
+        return self.compute_metrics().view(
+            self.num_base_heads,
+            self.generated_heads_per_base,
+            self.base_dim,
+            self.base_dim,
+        )
+
     def _apply_metric_to_queries(self, q: torch.Tensor) -> torch.Tensor:
+        q_base = self._reshape_base_qk(q)
         if self.generator_type == "diagonal" and self.metric_mode != "unconstrained":
             diagonal = torch.einsum("hm,md->hd", self.theta, self.generators)
             diagonal = self.metric_beta * diagonal
             scale = 1.0 + diagonal if self.metric_mode == "residual" else torch.exp(diagonal)
-            return q[:, None, :, :] * scale[None, :, None, :]
-        metrics = self.compute_metrics()
-        return torch.einsum("btd,hde->bhte", q, metrics)
+            scale = scale.view(
+                self.num_base_heads,
+                self.generated_heads_per_base,
+                self.base_dim,
+            )
+            q_metric = q_base[:, :, None, :, :] * scale[None, :, :, None, :]
+        else:
+            metrics = self._metrics_by_base()
+            q_metric = torch.einsum("nbtd,bkde->nbkte", q_base, metrics)
+        batch, _, _, seq_len, _ = q_metric.shape
+        return q_metric.reshape(batch, self.num_heads, seq_len, self.base_dim)
 
     def _score_scale(self) -> torch.Tensor | float:
         if self.logit_scale_mode == "sqrt_dim" and not hasattr(self, "head_logit_scale"):
@@ -246,7 +286,8 @@ class LieGeneratedMetricAttention(nn.Module):
         apply_scale: bool = True,
     ) -> torch.Tensor:
         q_metric = self._apply_metric_to_queries(q)
-        scores = torch.einsum("bhtd,bsd->bhts", q_metric, k)
+        k_heads = self._expand_keys(k)
+        scores = torch.einsum("bhtd,bhsd->bhts", q_metric, k_heads)
         if not apply_scale:
             return scores
         scale = self._score_scale()
@@ -255,11 +296,31 @@ class LieGeneratedMetricAttention(nn.Module):
         return scores / scale
 
     def _expand_values(self, v: torch.Tensor) -> torch.Tensor:
-        batch, seq_len, _ = v.shape
-        values = v[:, None, :, :].expand(batch, self.num_heads, seq_len, self.value_dim)
+        values = self._reshape_base_values(v)
+        batch, _, seq_len, _ = values.shape
+        values = values[:, :, None, :, :].expand(
+            batch,
+            self.num_base_heads,
+            self.generated_heads_per_base,
+            seq_len,
+            self.value_dim,
+        )
+        values = values.reshape(batch, self.num_heads, seq_len, self.value_dim)
         if hasattr(self, "value_scale"):
             values = values * self.value_scale[None, :, None, :]
         return values
+
+    def _expand_keys(self, k: torch.Tensor) -> torch.Tensor:
+        keys = self._reshape_base_qk(k)
+        batch, _, seq_len, _ = keys.shape
+        keys = keys[:, :, None, :, :].expand(
+            batch,
+            self.num_base_heads,
+            self.generated_heads_per_base,
+            seq_len,
+            self.base_dim,
+        )
+        return keys.reshape(batch, self.num_heads, seq_len, self.base_dim)
 
     def _prepare_additive_mask(
         self,
@@ -346,7 +407,7 @@ class LieGeneratedMetricAttention(nn.Module):
             sdpa_scale = 1.0
         else:
             sdpa_scale = 1.0 / scale
-        k_expanded = k[:, None, :, :].expand(batch, self.num_heads, seq_len, self.base_dim)
+        k_expanded = self._expand_keys(k)
         v_expanded = self._expand_values(v)
 
         sdpa_mask = self._prepare_sdpa_mask(attn_mask, q.dtype, q.device)

@@ -99,9 +99,23 @@ def induced_bilinear_forms(module: nn.Module, metrics: torch.Tensor | None = Non
         if not hasattr(module, "compute_metrics"):
             raise ValueError("module does not expose compute_metrics")
         metrics = module.compute_metrics()
-    wq = module.q_proj.weight
-    wk = module.k_proj.weight
-    return torch.einsum("id,hde,ej->hij", wq.transpose(0, 1), metrics, wk)
+    base_dim = getattr(module, "base_dim", metrics.shape[-1])
+    num_base_heads = getattr(module, "num_base_heads", 1)
+    generated_heads_per_base = getattr(
+        module,
+        "generated_heads_per_base",
+        metrics.shape[0] // num_base_heads,
+    )
+    wq = module.q_proj.weight.view(num_base_heads, base_dim, -1)
+    wk = module.k_proj.weight.view(num_base_heads, base_dim, -1)
+    metrics_by_base = metrics.view(
+        num_base_heads,
+        generated_heads_per_base,
+        base_dim,
+        base_dim,
+    )
+    forms = torch.einsum("bid,bkde,bej->bkij", wq.transpose(-1, -2), metrics_by_base, wk)
+    return forms.reshape(metrics.shape[0], forms.shape[-2], forms.shape[-1])
 
 
 def induced_metric_cosine_similarity(
@@ -140,6 +154,32 @@ def grouped_gradient_norms(module: nn.Module) -> dict[str, float]:
             found = True
             squared += float(param.grad.detach().float().pow(2).sum().cpu())
         output[f"grad_norm_{group}"] = squared**0.5 if found else 0.0
+    return output
+
+
+def grouped_similarity_stats(
+    similarity: torch.Tensor,
+    num_base_heads: int,
+    generated_heads_per_base: int,
+) -> dict[str, torch.Tensor]:
+    """Within-base and across-base off-diagonal means for flattened head similarities."""
+    if similarity.ndim != 2 or similarity.shape[0] != similarity.shape[1]:
+        raise ValueError("similarity must be square")
+    expected = num_base_heads * generated_heads_per_base
+    if similarity.shape[0] != expected:
+        raise ValueError("similarity size does not match base/head grouping")
+    device = similarity.device
+    head_ids = torch.arange(expected, device=device)
+    base_ids = torch.div(head_ids, generated_heads_per_base, rounding_mode="floor")
+    same_base = base_ids[:, None] == base_ids[None, :]
+    diagonal = torch.eye(expected, device=device, dtype=torch.bool)
+    within = same_base & ~diagonal
+    across = ~same_base
+    output: dict[str, torch.Tensor] = {}
+    if within.any():
+        output["within_base_offdiag_mean_cosine"] = similarity[within].mean()
+    if across.any():
+        output["across_base_mean_cosine"] = similarity[across].mean()
     return output
 
 

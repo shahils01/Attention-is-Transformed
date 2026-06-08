@@ -51,7 +51,14 @@ def test_multi_relation_targets_apply_selected_relation():
 
 def test_tiny_lm_forward_loss_for_attention_variants():
     torch.manual_seed(0)
-    for attention_type in ("mha", "lgma", "lgma_v2", "lgma_residual", "lgma_unconstrained"):
+    for attention_type in (
+        "mha",
+        "lgma",
+        "lgma_v2",
+        "lgma_residual",
+        "lgma_unconstrained",
+        "lgma_multibase",
+    ):
         model = TinyTransformerLM(
             vocab_size=16,
             d_model=32,

@@ -50,6 +50,45 @@ def test_lgma_base_dim_and_value_dim_shape_backward():
     assert torch.isfinite(layer.q_proj.weight.grad).all()
 
 
+def test_lgma_multibase_shape_and_projection_widths():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        32,
+        num_heads=8,
+        head_dim=4,
+        base_dim=6,
+        value_dim=5,
+        num_generators=3,
+        num_base_heads=2,
+        value_transform="diag",
+        use_sdpa=False,
+    )
+    assert layer.generated_heads_per_base == 4
+    assert layer.q_proj.weight.shape == (12, 32)
+    assert layer.k_proj.weight.shape == (12, 32)
+    assert layer.v_proj.weight.shape == (10, 32)
+    assert layer.value_scale.shape == (8, 5)
+    x = torch.randn(2, 7, 32)
+    y, attn = layer(x, need_weights=True)
+    assert y.shape == (2, 7, 32)
+    assert attn.shape == (2, 8, 7, 7)
+
+
+def test_lgma_multibase_requires_heads_divisible_by_bases():
+    try:
+        LieGeneratedMetricAttention(
+            32,
+            num_heads=7,
+            head_dim=4,
+            num_generators=2,
+            num_base_heads=2,
+        )
+    except ValueError as exc:
+        assert "divisible" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_lgma_backward_has_finite_gradients():
     torch.manual_seed(0)
     layer = LieGeneratedMetricAttention(64, 8, 8, 4, generator_type="full")
@@ -245,6 +284,45 @@ def test_sdpa_matches_explicit_path_without_dropout_or_masks():
         num_generators=2,
         dropout=0.0,
         use_sdpa=True,
+    )
+    sdpa.load_state_dict(explicit.state_dict())
+    explicit.eval()
+    sdpa.eval()
+    x = torch.randn(2, 8, 32)
+    y_explicit = explicit(x)
+    y_sdpa = sdpa(x)
+    assert torch.allclose(y_explicit, y_sdpa, atol=1e-5)
+
+
+def test_multibase_sdpa_matches_explicit_path_without_dropout_or_masks():
+    torch.manual_seed(0)
+    explicit = LieGeneratedMetricAttention(
+        32,
+        num_heads=4,
+        head_dim=8,
+        base_dim=8,
+        value_dim=8,
+        num_generators=2,
+        num_base_heads=2,
+        dropout=0.0,
+        use_sdpa=False,
+        logit_scale_mode="rms_metric",
+        learn_head_temperature=True,
+        value_transform="diag",
+    )
+    sdpa = LieGeneratedMetricAttention(
+        32,
+        num_heads=4,
+        head_dim=8,
+        base_dim=8,
+        value_dim=8,
+        num_generators=2,
+        num_base_heads=2,
+        dropout=0.0,
+        use_sdpa=True,
+        logit_scale_mode="rms_metric",
+        learn_head_temperature=True,
+        value_transform="diag",
     )
     sdpa.load_state_dict(explicit.state_dict())
     explicit.eval()

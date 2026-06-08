@@ -24,6 +24,7 @@ from lgma.diagnostics import (
     attention_cosine_similarity,
     centered_attention_cosine_similarity,
     grouped_gradient_norms,
+    grouped_similarity_stats,
     induced_bilinear_forms,
     induced_metric_cosine_similarity,
     mean_off_diagonal,
@@ -47,6 +48,8 @@ ATTENTION_TYPES = [
     "lgma_residual",
     "lgma_unconstrained",
     "lgma_value_diag",
+    "lgma_multibase",
+    "lgma_multibase_value_diag",
 ]
 GENERATOR_TYPES = ["full", "diagonal", "symmetric"]
 
@@ -96,6 +99,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--head_dim", type=int, default=None)
     parser.add_argument("--base_dim", type=int, default=None)
     parser.add_argument("--value_dim", type=int, default=None)
+    parser.add_argument("--num_base_heads", type=int, default=None)
     parser.add_argument("--context_length", type=int, default=None)
     parser.add_argument("--num_kv_heads", type=int, default=None)
     parser.add_argument("--dropout", type=float, default=None)
@@ -236,6 +240,8 @@ def effective_attention_config(module) -> dict[str, object]:
         "base_dim",
         "value_dim",
         "num_heads",
+        "num_base_heads",
+        "generated_heads_per_base",
         "num_generators",
         "generator_type",
         "metric_mode",
@@ -270,6 +276,7 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
         "generator_init_scale": 0.02,
         "base_dim": None,
         "value_dim": None,
+        "num_base_heads": 1,
         "metric_mode": "exp",
         "metric_beta": 1.0,
         "theta_init": "random_sphere",
@@ -289,6 +296,7 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
         "head_dim": args.head_dim,
         "base_dim": args.base_dim,
         "value_dim": args.value_dim,
+        "num_base_heads": args.num_base_heads,
         "context_length": args.context_length,
         "num_kv_heads": args.num_kv_heads,
         "dropout": args.dropout,
@@ -417,12 +425,44 @@ def add_attention_diagnostics(
         report["centered_attention_diversity_offdiag_mean_cosine"] = float(
             mean_off_diagonal(centered_similarity)
         )
+        if hasattr(first_attn, "num_base_heads") and first_attn.num_base_heads > 1:
+            report.update(
+                {
+                    f"attention_{key}": float(value)
+                    for key, value in grouped_similarity_stats(
+                        attention_similarity,
+                        first_attn.num_base_heads,
+                        first_attn.generated_heads_per_base,
+                    ).items()
+                }
+            )
+            report.update(
+                {
+                    f"centered_attention_{key}": float(value)
+                    for key, value in grouped_similarity_stats(
+                        centered_similarity,
+                        first_attn.num_base_heads,
+                        first_attn.generated_heads_per_base,
+                    ).items()
+                }
+            )
         if score_sims:
             score_similarity = torch.stack(score_sims).mean(dim=0)
             report["score_diversity_mean_cosine"] = float(score_similarity.mean())
             report["score_diversity_offdiag_mean_cosine"] = float(
                 mean_off_diagonal(score_similarity)
             )
+            if hasattr(first_attn, "num_base_heads") and first_attn.num_base_heads > 1:
+                report.update(
+                    {
+                        f"score_{key}": float(value)
+                        for key, value in grouped_similarity_stats(
+                            score_similarity,
+                            first_attn.num_base_heads,
+                            first_attn.generated_heads_per_base,
+                        ).items()
+                    }
+                )
         if hasattr(first_attn, "compute_metrics"):
             metrics = first_attn.compute_metrics()
             metric_similarity = metric_cosine_similarity(metrics)
@@ -445,6 +485,27 @@ def add_attention_diagnostics(
             report["induced_metric_diversity_offdiag_mean_cosine"] = float(
                 mean_off_diagonal(induced_similarity)
             )
+            if hasattr(first_attn, "num_base_heads") and first_attn.num_base_heads > 1:
+                report.update(
+                    {
+                        f"metric_{key}": float(value)
+                        for key, value in grouped_similarity_stats(
+                            metric_similarity,
+                            first_attn.num_base_heads,
+                            first_attn.generated_heads_per_base,
+                        ).items()
+                    }
+                )
+                report.update(
+                    {
+                        f"induced_metric_{key}": float(value)
+                        for key, value in grouped_similarity_stats(
+                            induced_similarity,
+                            first_attn.num_base_heads,
+                            first_attn.generated_heads_per_base,
+                        ).items()
+                    }
+                )
 
 
 def save_checkpoint(
