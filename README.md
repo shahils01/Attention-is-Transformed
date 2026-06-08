@@ -74,6 +74,41 @@ By default, the metric-diversity regularizer compares metric deviations
 `M_h - I`, not full `M_h`, because full-metric cosine is dominated by the
 shared identity component early in training.
 
+For the first harder controlled benchmark, use `multi_relation`. Position 0 is
+a relation-control token selecting one of four transformations over the rest of
+the sequence: copy, reverse, previous-token lookup, or next-token lookup. The
+runner reports overall validation loss and per-relation validation loss.
+
+```bash
+python experiments/train_synthetic.py --task multi_relation --attention mha --steps 5000
+python experiments/train_synthetic.py --task multi_relation --attention shared_identity --steps 5000
+python experiments/train_synthetic.py --task multi_relation --attention lgma --steps 5000
+python experiments/train_synthetic.py --task multi_relation --attention lgma --steps 5000 \
+  --theta_init_scale 0.5 --generator_init_scale 0.2 \
+  --metric_diversity_weight 1e-2
+```
+
+## Dataset Downloads
+
+Dataset download scripts live in `dataset_downloads/`. On Palmetto, use scratch
+storage instead of home:
+
+```bash
+mkdir -p $SCRATCH/lgma_data $SCRATCH/hf_cache
+export DATA_DIR=$SCRATCH/lgma_data
+export HF_HOME=$SCRATCH/hf_cache
+export HF_DATASETS_CACHE=$SCRATCH/hf_cache/datasets
+pip install -e ".[data]"
+```
+
+Download real text datasets:
+
+```bash
+python dataset_downloads/download_tinystories.py
+python dataset_downloads/download_wikitext103.py
+python dataset_downloads/download_c4_subset.py --rows 50000
+```
+
 `experiments/train_tinystories.py` is intentionally dependency-light. It expects
 a plain text file and trains a small character-level decoder-only language model:
 

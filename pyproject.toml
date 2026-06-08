@@ -16,6 +16,10 @@ dependencies = [
 dev = [
   "pytest",
 ]
+data = [
+  "datasets",
+  "huggingface_hub",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

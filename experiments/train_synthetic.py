@@ -25,11 +25,22 @@ from lgma.synthetic import make_synthetic_batch
 from lgma.transformer import TinyTransformerLM
 
 
+SYNTHETIC_TASKS = [
+    "copy",
+    "reverse",
+    "modular",
+    "previous",
+    "cumsum_mod",
+    "multi_relation",
+]
+MULTI_RELATION_NAMES = ["copy", "reverse", "previous", "next"]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a tiny LM on synthetic tasks.")
     parser.add_argument(
         "--task",
-        choices=["copy", "reverse", "modular", "previous", "cumsum_mod"],
+        choices=SYNTHETIC_TASKS,
         default="copy",
     )
     parser.add_argument("--attention", choices=["mha", "mqa", "gqa", "shared_identity", "lgma"], default="lgma")
@@ -45,6 +56,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--head_dim", type=int, default=16)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--eval_batches",
+        type=int,
+        default=8,
+        help="Number of fresh synthetic batches used for validation reporting.",
+    )
     parser.add_argument(
         "--theta_init_scale",
         type=float,
@@ -79,6 +96,37 @@ def parse_args() -> argparse.Namespace:
         help="Use causal attention. Default synthetic experiments are non-causal.",
     )
     return parser.parse_args()
+
+
+@torch.no_grad()
+def evaluate_loss(
+    model: TinyTransformerLM,
+    task: str,
+    batch_size: int,
+    seq_len: int,
+    vocab_size: int,
+    device: torch.device,
+    eval_batches: int,
+    relation_id: int | None = None,
+) -> float:
+    model.eval()
+    losses = []
+    for _ in range(eval_batches):
+        relation_ids = None
+        if relation_id is not None:
+            relation_ids = torch.full((batch_size,), relation_id, device=device, dtype=torch.long)
+        batch = make_synthetic_batch(
+            task,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            device=device,
+            relation_ids=relation_ids,
+        )
+        _, loss = model(batch.input_ids, batch.targets)
+        losses.append(loss.detach())
+    model.train()
+    return float(torch.stack(losses).mean().cpu())
 
 
 def main() -> None:
@@ -161,8 +209,31 @@ def main() -> None:
             first_attn, sequence_length=args.seq_len, batch_size=args.batch_size
         ).__dict__,
         "final_loss": last_loss,
+        "validation_loss": evaluate_loss(
+            model,
+            args.task,
+            args.batch_size,
+            args.seq_len,
+            args.vocab_size,
+            device,
+            args.eval_batches,
+        ),
         "final_metric_diversity_loss": last_diversity_loss,
     }
+    if args.task == "multi_relation":
+        report["validation_loss_by_relation"] = {
+            name: evaluate_loss(
+                model,
+                args.task,
+                args.batch_size,
+                args.seq_len,
+                args.vocab_size,
+                device,
+                args.eval_batches,
+                relation_id=idx,
+            )
+            for idx, name in enumerate(MULTI_RELATION_NAMES)
+        }
     with torch.no_grad():
         batch = make_synthetic_batch(
             args.task, args.batch_size, args.seq_len, args.vocab_size, device=device
