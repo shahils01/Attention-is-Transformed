@@ -3,8 +3,8 @@ python experiments/train_tinystories.py \
   --val_data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-valid.txt \
   --attention lgma_multibase \
   --device cuda:0 \
-  --precision fp32 \
-  --batch_size 512 \
+  --precision bf16 \
+  --batch_size 1024 \
   --grad_accum_steps 4 \
   --steps 500000 \
   --log_every 100 \
@@ -13,7 +13,7 @@ python experiments/train_tinystories.py \
   --output_dir /scratch/shahils/lgma_runs/tinystories_lgma_multibase_b2_1 \
   --num_heads 8 \
   --num_base_heads 2 \
-  --base_dim 32 \
+  --base_dim 64 \
   --num_generators 8 \
   --metric_beta 0.25 \
   --diagnostic_every 1000 \
