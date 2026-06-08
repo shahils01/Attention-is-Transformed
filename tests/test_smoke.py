@@ -108,3 +108,47 @@ def test_train_synthetic_smoke_runs_for_one_step():
         train_synthetic.main()
     finally:
         sys.argv = old_argv
+
+
+def test_train_tinystories_smoke_runs_for_one_step(tmp_path):
+    import sys
+
+    data_path = tmp_path / "tiny.txt"
+    data_path.write_text(
+        "once upon a time there was a small model. " * 20,
+        encoding="utf-8",
+    )
+
+    sys.path.insert(0, str(ROOT / "experiments"))
+    import train_tinystories
+
+    old_argv = sys.argv
+    sys.argv = [
+        "train_tinystories.py",
+        "--data_path",
+        str(data_path),
+        "--attention",
+        "lgma",
+        "--steps",
+        "1",
+        "--batch_size",
+        "2",
+        "--eval_batches",
+        "1",
+        "--context_length",
+        "8",
+        "--d_model",
+        "32",
+        "--num_layers",
+        "1",
+        "--num_heads",
+        "2",
+        "--head_dim",
+        "8",
+        "--num_generators",
+        "2",
+    ]
+    try:
+        train_tinystories.main()
+    finally:
+        sys.argv = old_argv

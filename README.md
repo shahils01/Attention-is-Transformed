@@ -109,9 +109,29 @@ python dataset_downloads/download_wikitext103.py
 python dataset_downloads/download_c4_subset.py --rows 50000
 ```
 
-`experiments/train_tinystories.py` is intentionally dependency-light. It expects
-a plain text file and trains a small character-level decoder-only language model:
+`experiments/train_tinystories.py` expects a plain text file and trains a
+character-level decoder-only language model. It now reports validation
+loss/perplexity, attention accounting, and LGMA diversity diagnostics:
 
 ```bash
-python experiments/train_tinystories.py --data_path /path/to/tinystories.txt --steps 100
+python experiments/train_tinystories.py \
+  --data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-valid.txt \
+  --attention mha \
+  --steps 1000
+
+python experiments/train_tinystories.py \
+  --data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-valid.txt \
+  --attention lgma \
+  --steps 1000
+
+python experiments/train_tinystories.py \
+  --data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-valid.txt \
+  --attention lgma \
+  --theta_init_scale 0.5 \
+  --generator_init_scale 0.2 \
+  --metric_diversity_weight 1e-2 \
+  --steps 1000
 ```
