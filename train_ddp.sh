@@ -1,14 +1,14 @@
-python experiments/train_tinystories.py \
+torchrun --standalone --nproc_per_node=2 experiments/train_tinystories.py \
   --data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-train.txt \
   --val_data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-valid.txt \
-  --device cuda:0 \
+  --device cuda \
   --batch_size 256 \
   --grad_accum_steps 4 \
   --steps 500000 \
   --log_every 100 \
   --eval_every 1000 \
   --save_every 5000 \
-  --output_dir /scratch/shahils/lgma_runs/large_tinystories_lgma_multibase_b2_v1 \
+  --output_dir /scratch/shahils/lgma_runs/large_tinystories_lgma_multibase_b2 \
   --resume_checkpoint /scratch/shahils/lgma_runs/large_tinystories_lgma_multibase_b2/checkpoint_step_15000.pt \
   --diagnostic_every 1000 \
   --diagnostic_batches 2 \

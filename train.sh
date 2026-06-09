@@ -3,19 +3,24 @@ python experiments/train_tinystories.py \
   --val_data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-valid.txt \
   --attention lgma_multibase \
   --device cuda:0 \
-  --precision bf16 \
+  --precision fp32 \
   --batch_size 1024 \
   --grad_accum_steps 4 \
   --steps 500000 \
   --log_every 100 \
   --eval_every 1000 \
   --save_every 5000 \
-  --output_dir /scratch/shahils/lgma_runs/tinystories_lgma_multibase_b2_1 \
+  --output_dir /scratch/shahils/lgma_runs/tinystories_lgma_multibase_b2 \
   --num_heads 8 \
   --num_base_heads 2 \
-  --base_dim 64 \
-  --num_generators 8 \
+  --base_dim 32 \
+  --num_generators 4 \
   --metric_beta 0.25 \
   --diagnostic_every 1000 \
   --diagnostic_batches 2 \
-  --context_length 512 
+  --wandb_project lgma \
+  --wandb_run_name tinystory_lgma_multibase_b2 \
+  --wandb_group tinystories \
+  --wandb_tags tinystory,lgma,multibase,b2 \
+  --induced_metric_diversity_weight 1e-3 \
+  --metric_diversity_weight 1e-4
