@@ -2,34 +2,34 @@ python experiments/train_tinystories.py \
   --data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-train.txt \
   --val_data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-valid.txt \
   --device cuda:0 \
-  --batch_size 256 \
-  --grad_accum_steps 4 \
+  --batch_size 16 \
+  --grad_accum_steps 1 \
   --steps 500000 \
   --log_every 100 \
   --eval_every 1000 \
   --save_every 5000 \
-  --output_dir /scratch/shahils/lgma_runs/large_tinystories_lgma_multibase_b2_v1 \
-  --resume_checkpoint /scratch/shahils/lgma_runs/large_tinystories_lgma_multibase_b2/checkpoint_step_15000.pt \
+  --output_dir /scratch/shahils/lgma_runs/large_tinystories_mha \
   --diagnostic_every 1000 \
   --diagnostic_batches 2 \
   --wandb_project lgma \
-  --wandb_run_name tinystory_lgma_multibase_b2 \
+  --wandb_run_name tinystory_mha \
   --wandb_group tinystories \
-  --wandb_tags tinystory,lgma,multibase,b2 \
+  --wandb_tags tinystory,mha,h16 \
   --induced_metric_diversity_weight 1e-3 \
   --metric_diversity_weight 1e-4 \
-  --attention lgma_multibase \
-  --d_model 512 \
+  --attention mha \
+  --d_model 1024 \
   --num_layers 12 \
-  --num_heads 8 \
-  --num_base_heads 2 \
+  --num_heads 16 \
   --head_dim 64 \
   --base_dim 64 \
   --value_dim 64 \
-  --num_generators 8 \
+  --num_generators 16 \
   --metric_beta 0.25 \
   --context_length 1024 \
   --dropout 0.1 \
   --lr 3e-4 \
   --weight_decay 0.01 \
   --precision bf16 \
+
+  # --resume_checkpoint /scratch/shahils/lgma_runs/large_tinystories_lgma_multibase_b2/checkpoint_step_15000.pt \
