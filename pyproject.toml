@@ -23,6 +23,9 @@ data = [
 tracking = [
   "wandb",
 ]
+eval = [
+  "openai",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
