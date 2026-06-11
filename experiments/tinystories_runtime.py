@@ -110,6 +110,7 @@ def generate_text(
     if temperature <= 0:
         raise SystemExit("--temperature must be positive")
     ids = encode_prompt(tokenizer, prompt, device)
+    prompt_len = ids.size(1)
     for _ in range(max_new_tokens):
         context = ids[:, -model.context_length :]
         logits = model(context)[:, -1, :] / temperature
@@ -119,4 +120,4 @@ def generate_text(
         probs = torch.softmax(logits, dim=-1)
         next_id = torch.multinomial(probs, num_samples=1)
         ids = torch.cat([ids, next_id], dim=1)
-    return tokenizer.decode(ids[0].cpu())
+    return tokenizer.decode(ids[0, prompt_len:].cpu())
