@@ -1,0 +1,9 @@
+python experiments/gpt_eval_tinystories.py \
+  --checkpoint lgma=/scratch/shahils/lgma_runs/large_tinystories_lgma_residual_multibase_b2_h16/checkpoint_step_175000.pt \
+  --checkpoint mha=/scratch/shahils/lgma_runs/large_tinystories_mha/checkpoint_step_55000.pt \
+  --data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-valid.txt \
+  --device cuda:0 \
+  --samples_per_prompt 10 \
+  --temperature 1.0 \
+  --output_dir outputs/tinystories_gpt_eval

@@ -1,0 +1,14 @@
+torch
+
+[data]
+datasets
+huggingface_hub
+
+[dev]
+pytest
+
+[eval]
+openai
+
+[tracking]
+wandb

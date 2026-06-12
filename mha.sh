@@ -2,8 +2,8 @@ python experiments/train_tinystories.py \
   --data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-train.txt \
   --val_data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-valid.txt \
   --device cuda:0 \
-  --batch_size 16 \
-  --grad_accum_steps 1 \
+  --batch_size 64 \
+  --grad_accum_steps 2 \
   --steps 500000 \
   --log_every 100 \
   --eval_every 1000 \
@@ -31,5 +31,4 @@ python experiments/train_tinystories.py \
   --lr 3e-4 \
   --weight_decay 0.01 \
   --precision bf16 \
-
-  # --resume_checkpoint /scratch/shahils/lgma_runs/large_tinystories_lgma_multibase_b2/checkpoint_step_15000.pt \
+  --resume_checkpoint /scratch/shahils/lgma_runs/large_tinystories_mha/checkpoint_step_55000.pt \
