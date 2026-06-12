@@ -15,6 +15,9 @@ from lgma.synthetic import CharTokenizer, make_lm_batch
 from lgma.transformer import TinyTransformerLM
 
 
+DEFAULT_STOP_SEQUENCE = "<|endoftext|>"
+
+
 def read_texts(data_path: Path, val_data_path: Path | None) -> tuple[str, str | None]:
     train_text = data_path.read_text(encoding="utf-8")
     val_text = val_data_path.read_text(encoding="utf-8") if val_data_path is not None else None
@@ -104,6 +107,7 @@ def generate_text(
     temperature: float,
     top_k: int | None,
     device: torch.device,
+    stop_sequence: str | None = DEFAULT_STOP_SEQUENCE,
 ) -> str:
     if not prompt:
         raise SystemExit("prompt must not be empty")
@@ -111,6 +115,11 @@ def generate_text(
         raise SystemExit("--temperature must be positive")
     ids = encode_prompt(tokenizer, prompt, device)
     prompt_len = ids.size(1)
+    stop_ids = None
+    if stop_sequence:
+        missing = [char for char in stop_sequence if char not in tokenizer.stoi]
+        if not missing:
+            stop_ids = tokenizer.encode(stop_sequence).to(device)
     for _ in range(max_new_tokens):
         context = ids[:, -model.context_length :]
         logits = model(context)[:, -1, :] / temperature
@@ -120,4 +129,10 @@ def generate_text(
         probs = torch.softmax(logits, dim=-1)
         next_id = torch.multinomial(probs, num_samples=1)
         ids = torch.cat([ids, next_id], dim=1)
-    return tokenizer.decode(ids[0, prompt_len:].cpu())
+        if stop_ids is not None and ids.size(1) - prompt_len >= stop_ids.numel():
+            if torch.equal(ids[0, -stop_ids.numel() :], stop_ids):
+                break
+    generated = tokenizer.decode(ids[0, prompt_len:].cpu())
+    if stop_sequence:
+        generated = generated.split(stop_sequence, 1)[0]
+    return generated
