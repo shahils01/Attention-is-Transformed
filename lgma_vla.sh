@@ -3,9 +3,16 @@ set -euo pipefail
 
 TRAIN_METAS_PATH="${TRAIN_METAS_PATH:-/scratch/shahils/openpi/datasets/Libero-XVLA-format/libero_meta.json}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/shahils/lgma_runs/libero_vla_lgma_residual_multibase_b2_v1}"
-DEVICE="${DEVICE:-cuda:0}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+if (( NPROC_PER_NODE > 1 )); then
+  DEVICE="${DEVICE:-cuda}"
+  LAUNCHER=(torchrun --standalone --nproc_per_node "${NPROC_PER_NODE}" experiments/train_vla.py)
+else
+  DEVICE="${DEVICE:-cuda:0}"
+  LAUNCHER=(python experiments/train_vla.py)
+fi
 
-python experiments/train_vla.py \
+"${LAUNCHER[@]}" \
   --train_metas_path "${TRAIN_METAS_PATH}" \
   --output_dir "${OUTPUT_DIR}" \
   --attention lgma_residual \

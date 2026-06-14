@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, random_split
+from torch.utils.data.distributed import DistributedSampler
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -80,7 +84,55 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--precision", choices=("fp32", "bf16", "fp16"), default="fp32")
+    parser.add_argument(
+        "--no_ddp",
+        action="store_true",
+        help="Disable torchrun/DDP setup even when WORLD_SIZE > 1.",
+    )
     return parser.parse_args()
+
+
+def distributed_env_enabled(args: argparse.Namespace) -> bool:
+    return not args.no_ddp and int(os.environ.get("WORLD_SIZE", "1")) > 1
+
+
+def setup_distributed(args: argparse.Namespace) -> tuple[bool, int, int, int, torch.device]:
+    if not distributed_env_enabled(args):
+        return False, 0, 0, 1, torch.device(args.device)
+
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    use_cuda = args.device.startswith("cuda") and torch.cuda.is_available()
+    backend = "nccl" if use_cuda else "gloo"
+    if use_cuda:
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+    else:
+        device = torch.device(args.device)
+    dist.init_process_group(backend=backend)
+    return True, rank, local_rank, world_size, device
+
+
+def cleanup_distributed(enabled: bool) -> None:
+    if enabled and dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def is_main_process(rank: int) -> bool:
+    return rank == 0
+
+
+def unwrap_model(model: torch.nn.Module) -> VLATransformerPolicy:
+    return model.module if isinstance(model, DistributedDataParallel) else model  # type: ignore[return-value]
+
+
+def distributed_mean(value: torch.Tensor, enabled: bool) -> torch.Tensor:
+    value = value.detach().float()
+    if enabled:
+        dist.all_reduce(value, op=dist.ReduceOp.SUM)
+        value = value / dist.get_world_size()
+    return value
 
 
 def make_config(args: argparse.Namespace) -> VLAPolicyConfig:
@@ -155,7 +207,7 @@ def move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str
 
 
 def loss_from_batch(
-    model: VLATransformerPolicy,
+    model: torch.nn.Module,
     batch: dict[str, torch.Tensor],
     device: torch.device,
     precision: str,
@@ -175,28 +227,33 @@ def loss_from_batch(
 
 @torch.no_grad()
 def evaluate(
-    model: VLATransformerPolicy,
+    model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
     precision: str,
     max_batches: int,
+    distributed: bool = False,
 ) -> dict[str, float]:
     model.eval()
-    totals: dict[str, float] = {}
-    count = 0
+    totals: dict[str, torch.Tensor] = {}
+    count = torch.zeros((), device=device)
     for batch in loader:
         loss, loss_dict = loss_from_batch(model, batch, device, precision)
-        logs = {key: float(value.detach().float().cpu()) for key, value in loss_dict.items()}
-        logs["loss_total"] = float(loss.detach().float().cpu())
+        logs = {key: value.detach().float() for key, value in loss_dict.items()}
+        logs["loss_total"] = loss.detach().float()
         for key, value in logs.items():
-            totals[key] = totals.get(key, 0.0) + value
-        count += 1
-        if count >= max_batches:
+            totals[key] = totals.get(key, torch.zeros((), device=device)) + value
+        count += 1.0
+        if int(count.item()) >= max_batches:
             break
+    if distributed:
+        dist.all_reduce(count, op=dist.ReduceOp.SUM)
+        for value in totals.values():
+            dist.all_reduce(value, op=dist.ReduceOp.SUM)
     model.train()
-    if count == 0:
+    if float(count.item()) == 0.0:
         return {}
-    return {f"val_{key}": value / count for key, value in totals.items()}
+    return {f"val_{key}": float((value / count).detach().cpu()) for key, value in totals.items()}
 
 
 def lgma_diagnostics(model: VLATransformerPolicy) -> dict[str, float]:
@@ -227,7 +284,7 @@ def write_jsonl(path: Path, payload: dict[str, object]) -> None:
 
 
 def save_checkpoint(
-    model: VLATransformerPolicy,
+    model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     config: VLAPolicyConfig,
     output_dir: Path,
@@ -237,7 +294,7 @@ def save_checkpoint(
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
-            "model": model.state_dict(),
+            "model": unwrap_model(model).state_dict(),
             "optimizer": optimizer.state_dict(),
             "config": config.to_dict(),
             "step": step,
@@ -250,26 +307,53 @@ def save_checkpoint(
 
 def main() -> None:
     args = parse_args()
-    torch.manual_seed(args.seed)
+    distributed, rank, local_rank, world_size, device = setup_distributed(args)
+    torch.manual_seed(args.seed + rank)
     np_seed = args.seed % (2**32)
     try:
         import numpy as np
 
-        np.random.seed(np_seed)
+        np.random.seed((np_seed + rank) % (2**32))
     except Exception:
         pass
 
-    device = torch.device(args.device)
     config = make_config(args)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    with (args.output_dir / "config.json").open("w", encoding="utf-8") as handle:
-        json.dump(config.to_dict(), handle, indent=2)
+    if is_main_process(rank):
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        with (args.output_dir / "config.json").open("w", encoding="utf-8") as handle:
+            json.dump(config.to_dict(), handle, indent=2)
+    if distributed:
+        dist.barrier()
 
     train_dataset, val_dataset = make_datasets(args)
+    train_sampler = (
+        DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            seed=args.seed,
+            drop_last=False,
+        )
+        if distributed
+        else None
+    )
+    val_sampler = (
+        DistributedSampler(
+            val_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            drop_last=False,
+        )
+        if distributed and val_dataset is not None
+        else None
+    )
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
         num_workers=args.num_workers,
         pin_memory=device.type == "cuda",
         persistent_workers=args.num_workers > 0,
@@ -279,6 +363,7 @@ def main() -> None:
             val_dataset,
             batch_size=args.batch_size,
             shuffle=False,
+            sampler=val_sampler,
             num_workers=args.num_workers,
             pin_memory=device.type == "cuda",
             persistent_workers=args.num_workers > 0,
@@ -288,65 +373,88 @@ def main() -> None:
     )
 
     model = VLATransformerPolicy(config).to(device)
+    if distributed:
+        ddp_kwargs = {}
+        if device.type == "cuda":
+            ddp_kwargs.update({"device_ids": [local_rank], "output_device": local_rank})
+        model = DistributedDataParallel(model, **ddp_kwargs)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda" and args.precision == "fp16")
 
-    first_attn = model.attention_modules[0]
-    accounting = attention_accounting(
-        first_attn,
-        sequence_length=config.text_length + config.num_views + 1 + config.action_horizon,
-        batch_size=args.batch_size,
-    )
-    print(f"model_parameters={count_parameters(model):,}")
-    print(f"first_attention_accounting={accounting}")
-    print(f"train_samples={len(train_dataset)} val_samples={len(val_dataset) if val_dataset is not None else 0}")
+    raw_model = unwrap_model(model)
+    if is_main_process(rank):
+        first_attn = raw_model.attention_modules[0]
+        accounting = attention_accounting(
+            first_attn,
+            sequence_length=config.text_length + config.num_views + 1 + config.action_horizon,
+            batch_size=args.batch_size,
+        )
+        print(f"model_parameters={count_parameters(raw_model):,}")
+        print(f"first_attention_accounting={accounting}")
+        print(f"train_samples={len(train_dataset)} val_samples={len(val_dataset) if val_dataset is not None else 0}")
+        print(f"distributed={distributed} world_size={world_size} device={device}")
 
     log_path = args.output_dir / "metrics.jsonl"
     model.train()
     step = 0
+    epoch = 0
     start = time.time()
-    while step < args.steps:
-        for batch in train_loader:
-            step += 1
-            optimizer.zero_grad(set_to_none=True)
-            loss, loss_dict = loss_from_batch(model, batch, device, args.precision)
-            if scaler.is_enabled():
-                scaler.scale(loss).backward()
-                if args.max_grad_norm:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                if args.max_grad_norm:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-                optimizer.step()
+    try:
+        while step < args.steps:
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+            epoch += 1
+            for batch in train_loader:
+                step += 1
+                optimizer.zero_grad(set_to_none=True)
+                loss, loss_dict = loss_from_batch(model, batch, device, args.precision)
+                if scaler.is_enabled():
+                    scaler.scale(loss).backward()
+                    if args.max_grad_norm:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    if args.max_grad_norm:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                    optimizer.step()
 
-            if step % args.log_every == 0 or step == 1:
-                logs: dict[str, object] = {
-                    "step": step,
-                    "loss_total": float(loss.detach().float().cpu()),
-                    "elapsed_sec": time.time() - start,
-                    "lr": optimizer.param_groups[0]["lr"],
-                }
-                logs.update({key: float(value.detach().float().cpu()) for key, value in loss_dict.items()})
-                logs.update(lgma_diagnostics(model))
-                print(json.dumps(logs, sort_keys=True))
-                write_jsonl(log_path, logs)
+                if step % args.log_every == 0 or step == 1:
+                    reduced_loss = distributed_mean(loss.detach(), distributed)
+                    reduced_parts = {
+                        key: distributed_mean(value.detach(), distributed)
+                        for key, value in loss_dict.items()
+                    }
+                    if is_main_process(rank):
+                        logs: dict[str, object] = {
+                            "step": step,
+                            "loss_total": float(reduced_loss.cpu()),
+                            "elapsed_sec": time.time() - start,
+                            "lr": optimizer.param_groups[0]["lr"],
+                        }
+                        logs.update({key: float(value.cpu()) for key, value in reduced_parts.items()})
+                        logs.update(lgma_diagnostics(raw_model))
+                        print(json.dumps(logs, sort_keys=True))
+                        write_jsonl(log_path, logs)
 
-            if val_loader is not None and args.eval_every > 0 and step % args.eval_every == 0:
-                logs = {"step": step, **evaluate(model, val_loader, device, args.precision, args.eval_batches)}
-                print(json.dumps(logs, sort_keys=True))
-                write_jsonl(log_path, logs)
+                if val_loader is not None and args.eval_every > 0 and step % args.eval_every == 0:
+                    logs = {"step": step, **evaluate(model, val_loader, device, args.precision, args.eval_batches, distributed)}
+                    if is_main_process(rank):
+                        print(json.dumps(logs, sort_keys=True))
+                        write_jsonl(log_path, logs)
 
-            if args.save_every > 0 and step % args.save_every == 0:
-                save_checkpoint(model, optimizer, config, args.output_dir, step)
+                if is_main_process(rank) and args.save_every > 0 and step % args.save_every == 0:
+                    save_checkpoint(model, optimizer, config, args.output_dir, step)
 
-            if step >= args.steps:
-                break
+                if step >= args.steps:
+                    break
 
-    save_checkpoint(model, optimizer, config, args.output_dir, step)
+        if is_main_process(rank):
+            save_checkpoint(model, optimizer, config, args.output_dir, step)
+    finally:
+        cleanup_distributed(distributed)
 
 
 if __name__ == "__main__":
