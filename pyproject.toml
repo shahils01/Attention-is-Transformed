@@ -29,7 +29,9 @@ tracking = [
   "wandb",
 ]
 eval = [
+  "imageio",
   "openai",
+  "tqdm",
 ]
 
 [tool.setuptools.packages.find]
