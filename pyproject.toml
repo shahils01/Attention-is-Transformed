@@ -20,6 +20,11 @@ data = [
   "datasets",
   "huggingface_hub",
 ]
+vla = [
+  "h5py",
+  "numpy",
+  "pillow",
+]
 tracking = [
   "wandb",
 ]

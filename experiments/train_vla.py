@@ -1,0 +1,353 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from contextlib import nullcontext
+from pathlib import Path
+
+import torch
+from torch.utils.data import DataLoader, random_split
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from lgma.accounting import attention_accounting, count_parameters
+from lgma.diagnostics import (
+    grouped_similarity_stats,
+    mean_off_diagonal,
+    metric_delta_cosine_similarity,
+    metric_distance_from_identity,
+)
+from lgma.vla_data import XVLAMetaDataset
+from lgma.vla_model import VLAPolicyConfig, VLATransformerPolicy, ee6d_loss
+
+
+ATTENTION_CHOICES = (
+    "mha",
+    "shared_identity",
+    "lgma",
+    "lgma_multibase",
+    "lgma_residual",
+    "lgma_unconstrained",
+)
+GENERATOR_TYPES = ("full", "diagonal", "symmetric")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser("Minimal VLA attention benchmark")
+    parser.add_argument("--train_metas_path", required=True)
+    parser.add_argument("--val_metas_path", default=None)
+    parser.add_argument("--output_dir", type=Path, default=Path("outputs/vla"))
+    parser.add_argument("--attention", choices=ATTENTION_CHOICES, default="mha")
+    parser.add_argument("--num_base_heads", type=int, default=1)
+    parser.add_argument("--num_generators", type=int, default=4)
+    parser.add_argument("--generator_type", choices=GENERATOR_TYPES, default="full")
+    parser.add_argument("--theta_init_scale", type=float, default=0.02)
+    parser.add_argument("--generator_init_scale", type=float, default=0.02)
+    parser.add_argument("--base_dim", type=int, default=None)
+    parser.add_argument("--value_dim", type=int, default=None)
+
+    parser.add_argument("--image_size", type=int, default=128)
+    parser.add_argument("--num_views", type=int, default=2)
+    parser.add_argument("--vocab_size", type=int, default=4096)
+    parser.add_argument("--text_length", type=int, default=32)
+    parser.add_argument("--action_horizon", type=int, default=10)
+    parser.add_argument("--d_model", type=int, default=256)
+    parser.add_argument("--num_layers", type=int, default=4)
+    parser.add_argument("--num_heads", type=int, default=8)
+    parser.add_argument("--head_dim", type=int, default=32)
+    parser.add_argument("--mlp_ratio", type=int, default=4)
+    parser.add_argument("--dropout", type=float, default=0.0)
+
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--steps", type=int, default=10000)
+    parser.add_argument("--eval_every", type=int, default=500)
+    parser.add_argument("--eval_batches", type=int, default=20)
+    parser.add_argument("--log_every", type=int, default=50)
+    parser.add_argument("--save_every", type=int, default=1000)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--max_grad_norm", type=float, default=1.0)
+    parser.add_argument("--val_fraction", type=float, default=0.05)
+    parser.add_argument("--stride", type=int, default=1)
+    parser.add_argument("--max_episodes", type=int, default=None)
+    parser.add_argument("--max_samples", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--precision", choices=("fp32", "bf16", "fp16"), default="fp32")
+    return parser.parse_args()
+
+
+def make_config(args: argparse.Namespace) -> VLAPolicyConfig:
+    num_base_heads = args.num_base_heads
+    if args.attention == "lgma_multibase" and num_base_heads == 1:
+        num_base_heads = 2
+    return VLAPolicyConfig(
+        image_size=args.image_size,
+        num_views=args.num_views,
+        vocab_size=args.vocab_size,
+        text_length=args.text_length,
+        action_horizon=args.action_horizon,
+        d_model=args.d_model,
+        num_layers=args.num_layers,
+        num_heads=args.num_heads,
+        head_dim=args.head_dim,
+        mlp_ratio=args.mlp_ratio,
+        dropout=args.dropout,
+        attention=args.attention,
+        num_generators=args.num_generators,
+        generator_type=args.generator_type,
+        theta_init_scale=args.theta_init_scale,
+        generator_init_scale=args.generator_init_scale,
+        num_base_heads=num_base_heads,
+        base_dim=args.base_dim,
+        value_dim=args.value_dim,
+    )
+
+
+def autocast_context(device: torch.device, precision: str):
+    if device.type != "cuda" or precision == "fp32":
+        return nullcontext()
+    dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+    return torch.cuda.amp.autocast(dtype=dtype)
+
+
+def make_datasets(args: argparse.Namespace) -> tuple[XVLAMetaDataset | torch.utils.data.Subset, object | None]:
+    train_dataset = XVLAMetaDataset(
+        args.train_metas_path,
+        action_horizon=args.action_horizon,
+        num_views=args.num_views,
+        image_size=args.image_size,
+        vocab_size=args.vocab_size,
+        text_length=args.text_length,
+        stride=args.stride,
+        max_episodes=args.max_episodes,
+        max_samples=args.max_samples,
+    )
+    if args.val_metas_path:
+        val_dataset = XVLAMetaDataset(
+            args.val_metas_path,
+            action_horizon=args.action_horizon,
+            num_views=args.num_views,
+            image_size=args.image_size,
+            vocab_size=args.vocab_size,
+            text_length=args.text_length,
+            stride=args.stride,
+            max_episodes=args.max_episodes,
+            max_samples=args.max_samples,
+        )
+        return train_dataset, val_dataset
+    if args.val_fraction <= 0.0 or len(train_dataset) < 2:
+        return train_dataset, None
+    val_len = max(1, int(len(train_dataset) * args.val_fraction))
+    train_len = len(train_dataset) - val_len
+    generator = torch.Generator().manual_seed(args.seed)
+    return random_split(train_dataset, [train_len, val_len], generator=generator)
+
+
+def move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
+    return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
+
+
+def loss_from_batch(
+    model: VLATransformerPolicy,
+    batch: dict[str, torch.Tensor],
+    device: torch.device,
+    precision: str,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    batch = move_batch(batch, device)
+    with autocast_context(device, precision):
+        pred = model(
+            image_input=batch["image_input"],
+            image_mask=batch["image_mask"],
+            text_token_ids=batch["text_token_ids"],
+            proprio=batch["proprio"],
+        )
+        loss_dict = ee6d_loss(pred, batch["action"])
+        loss = sum(loss_dict.values())
+    return loss, loss_dict
+
+
+@torch.no_grad()
+def evaluate(
+    model: VLATransformerPolicy,
+    loader: DataLoader,
+    device: torch.device,
+    precision: str,
+    max_batches: int,
+) -> dict[str, float]:
+    model.eval()
+    totals: dict[str, float] = {}
+    count = 0
+    for batch in loader:
+        loss, loss_dict = loss_from_batch(model, batch, device, precision)
+        logs = {key: float(value.detach().float().cpu()) for key, value in loss_dict.items()}
+        logs["loss_total"] = float(loss.detach().float().cpu())
+        for key, value in logs.items():
+            totals[key] = totals.get(key, 0.0) + value
+        count += 1
+        if count >= max_batches:
+            break
+    model.train()
+    if count == 0:
+        return {}
+    return {f"val_{key}": value / count for key, value in totals.items()}
+
+
+def lgma_diagnostics(model: VLATransformerPolicy) -> dict[str, float]:
+    logs: dict[str, float] = {}
+    for layer_idx, attn in enumerate(model.attention_modules):
+        if not hasattr(attn, "compute_metrics"):
+            continue
+        metrics = attn.compute_metrics().detach().float()
+        similarity = metric_delta_cosine_similarity(metrics)
+        prefix = f"attn{layer_idx}"
+        logs[f"{prefix}_metric_delta_offdiag_cosine"] = float(mean_off_diagonal(similarity).cpu())
+        logs[f"{prefix}_metric_distance_from_identity"] = float(
+            metric_distance_from_identity(metrics).mean().cpu()
+        )
+        grouped = grouped_similarity_stats(
+            similarity,
+            num_base_heads=getattr(attn, "num_base_heads", 1),
+            generated_heads_per_base=getattr(attn, "generated_heads_per_base", attn.num_heads),
+        )
+        for key, value in grouped.items():
+            logs[f"{prefix}_{key}"] = float(value.cpu())
+    return logs
+
+
+def write_jsonl(path: Path, payload: dict[str, object]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload) + "\n")
+
+
+def save_checkpoint(
+    model: VLATransformerPolicy,
+    optimizer: torch.optim.Optimizer,
+    config: VLAPolicyConfig,
+    output_dir: Path,
+    step: int,
+) -> None:
+    ckpt_dir = output_dir / f"checkpoint_step_{step}"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "config": config.to_dict(),
+            "step": step,
+        },
+        ckpt_dir / "checkpoint.pt",
+    )
+    with (ckpt_dir / "config.json").open("w", encoding="utf-8") as handle:
+        json.dump(config.to_dict(), handle, indent=2)
+
+
+def main() -> None:
+    args = parse_args()
+    torch.manual_seed(args.seed)
+    np_seed = args.seed % (2**32)
+    try:
+        import numpy as np
+
+        np.random.seed(np_seed)
+    except Exception:
+        pass
+
+    device = torch.device(args.device)
+    config = make_config(args)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    with (args.output_dir / "config.json").open("w", encoding="utf-8") as handle:
+        json.dump(config.to_dict(), handle, indent=2)
+
+    train_dataset, val_dataset = make_datasets(args)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=args.num_workers > 0,
+    )
+    val_loader = (
+        DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=device.type == "cuda",
+            persistent_workers=args.num_workers > 0,
+        )
+        if val_dataset is not None
+        else None
+    )
+
+    model = VLATransformerPolicy(config).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda" and args.precision == "fp16")
+
+    first_attn = model.attention_modules[0]
+    accounting = attention_accounting(
+        first_attn,
+        sequence_length=config.text_length + config.num_views + 1 + config.action_horizon,
+        batch_size=args.batch_size,
+    )
+    print(f"model_parameters={count_parameters(model):,}")
+    print(f"first_attention_accounting={accounting}")
+    print(f"train_samples={len(train_dataset)} val_samples={len(val_dataset) if val_dataset is not None else 0}")
+
+    log_path = args.output_dir / "metrics.jsonl"
+    model.train()
+    step = 0
+    start = time.time()
+    while step < args.steps:
+        for batch in train_loader:
+            step += 1
+            optimizer.zero_grad(set_to_none=True)
+            loss, loss_dict = loss_from_batch(model, batch, device, args.precision)
+            if scaler.is_enabled():
+                scaler.scale(loss).backward()
+                if args.max_grad_norm:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                if args.max_grad_norm:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                optimizer.step()
+
+            if step % args.log_every == 0 or step == 1:
+                logs: dict[str, object] = {
+                    "step": step,
+                    "loss_total": float(loss.detach().float().cpu()),
+                    "elapsed_sec": time.time() - start,
+                    "lr": optimizer.param_groups[0]["lr"],
+                }
+                logs.update({key: float(value.detach().float().cpu()) for key, value in loss_dict.items()})
+                logs.update(lgma_diagnostics(model))
+                print(json.dumps(logs, sort_keys=True))
+                write_jsonl(log_path, logs)
+
+            if val_loader is not None and args.eval_every > 0 and step % args.eval_every == 0:
+                logs = {"step": step, **evaluate(model, val_loader, device, args.precision, args.eval_batches)}
+                print(json.dumps(logs, sort_keys=True))
+                write_jsonl(log_path, logs)
+
+            if args.save_every > 0 and step % args.save_every == 0:
+                save_checkpoint(model, optimizer, config, args.output_dir, step)
+
+            if step >= args.steps:
+                break
+
+    save_checkpoint(model, optimizer, config, args.output_dir, step)
+
+
+if __name__ == "__main__":
+    main()
