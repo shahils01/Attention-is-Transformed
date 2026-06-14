@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import h5py
 import numpy as np
 import pytest
 import torch
+from PIL import Image
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +35,41 @@ def _write_libero_fixture(root: Path, length: int = 8) -> Path:
         f.create_dataset("language_instruction", data=np.bytes_("pick up the block"))
     meta = {
         "dataset_name": "tiny_libero",
+        "robot_type": "libero",
+        "observation_key": ["agentview_rgb", "eye_in_hand_rgb"],
+        "language_instruction_key": "language_instruction",
+        "datalist": [str(h5_path)],
+    }
+    meta_path = root / "libero_meta.json"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    return meta_path
+
+
+def _write_encoded_libero_fixture(root: Path, length: int = 8) -> Path:
+    data_dir = root / "data"
+    data_dir.mkdir(parents=True)
+    h5_path = data_dir / "episode_000000.hdf5"
+    rng = np.random.default_rng(1)
+    encoded = []
+    for _ in range(length):
+        image = Image.fromarray(rng.integers(0, 255, size=(24, 24, 3), dtype=np.uint8))
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        encoded.append(np.frombuffer(buffer.getvalue(), dtype=np.uint8))
+    max_len = max(x.size for x in encoded)
+    padded = np.zeros((length, max_len), dtype=np.uint8)
+    for idx, item in enumerate(encoded):
+        padded[idx, : item.size] = item
+
+    with h5py.File(h5_path, "w") as f:
+        action = rng.normal(size=(length, 10)).astype(np.float32)
+        action[:, 9] = (rng.random(length) > 0.5).astype(np.float32)
+        f.create_dataset("abs_action_6d", data=action)
+        f.create_dataset("agentview_rgb", data=padded)
+        f.create_dataset("eye_in_hand_rgb", data=padded)
+        f.create_dataset("language_instruction", data=np.bytes_("pick up the block"))
+    meta = {
+        "dataset_name": "tiny_libero_encoded",
         "robot_type": "libero",
         "observation_key": ["agentview_rgb", "eye_in_hand_rgb"],
         "language_instruction_key": "language_instruction",
@@ -119,6 +156,21 @@ def test_xvla_meta_dataset_loads_tiny_libero(tmp_path: Path):
     assert sample["text_token_ids"].shape == (8,)
     assert sample["proprio"].shape == (20,)
     assert sample["action"].shape == (3, 20)
+
+
+def test_xvla_meta_dataset_decodes_encoded_image_bytes(tmp_path: Path):
+    meta_path = _write_encoded_libero_fixture(tmp_path)
+    dataset = XVLAMetaDataset(
+        meta_path,
+        action_horizon=3,
+        num_views=2,
+        image_size=16,
+        vocab_size=128,
+        text_length=8,
+    )
+    sample = dataset[0]
+    assert sample["image_input"].shape == (2, 3, 16, 16)
+    assert torch.isfinite(sample["image_input"]).all()
 
 
 def test_vla_train_smoke_two_steps(tmp_path: Path):

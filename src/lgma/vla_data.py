@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ import h5py
 import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from torch.utils.data import Dataset
 
 
@@ -183,12 +185,14 @@ def _image_count(f: h5py.File, entry: VLAMetaEntry) -> int:
 
 def _load_image_tensor(array: np.ndarray, image_size: int) -> torch.Tensor:
     image = np.asarray(array)
+    if image.ndim == 1:
+        image = _decode_image_bytes(image)
     if image.ndim != 3:
         raise ValueError(f"image must be [H,W,C], got {image.shape}")
     if image.shape[0] == 3 and image.shape[-1] != 3:
         tensor = torch.from_numpy(image).float()
     else:
-        tensor = torch.from_numpy(np.ascontiguousarray(image)).permute(2, 0, 1).float()
+        tensor = torch.from_numpy(np.array(image, copy=True)).permute(2, 0, 1).float()
     if tensor.max() > 2.0:
         tensor = tensor / 255.0
     tensor = F.interpolate(
@@ -198,6 +202,23 @@ def _load_image_tensor(array: np.ndarray, image_size: int) -> torch.Tensor:
         align_corners=False,
     ).squeeze(0)
     return (tensor - IMAGENET_MEAN) / IMAGENET_STD
+
+
+def _decode_image_bytes(image: np.ndarray) -> np.ndarray:
+    raw = np.asarray(image)
+    if raw.dtype != np.uint8:
+        raw = raw.astype(np.uint8)
+    blob = raw.tobytes()
+    try:
+        with Image.open(io.BytesIO(blob)) as pil_image:
+            return np.asarray(pil_image.convert("RGB"))
+    except Exception:
+        # Some converted robot datasets store raw RGB bytes rather than JPEG/PNG.
+        if raw.size == 2764800:
+            return raw.reshape(720, 1280, 3)
+        if raw.size == 921600:
+            return raw.reshape(480, 640, 3)
+        raise ValueError(f"image must be [H,W,C] or encoded bytes, got {image.shape}")
 
 
 class XVLAMetaDataset(Dataset):
