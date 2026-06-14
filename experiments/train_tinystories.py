@@ -47,6 +47,7 @@ ATTENTION_TYPES = [
     "lgma",
     "lgma_v2",
     "lgma_residual",
+    "lgma_quad",
     "lgma_unconstrained",
     "lgma_value_diag",
     "lgma_multibase",
@@ -116,7 +117,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="LGMA generator initialization scale before division by sqrt(head_dim).",
     )
-    parser.add_argument("--metric_mode", choices=["exp", "residual", "unconstrained"], default=None)
+    parser.add_argument(
+        "--metric_mode",
+        choices=["exp", "residual", "quadratic", "unconstrained"],
+        default=None,
+    )
     parser.add_argument("--metric_beta", type=float, default=None)
     parser.add_argument("--theta_init", choices=["random_sphere", "circle"], default=None)
     parser.add_argument("--logit_scale_mode", choices=["sqrt_dim", "rms_metric"], default=None)

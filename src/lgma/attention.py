@@ -52,7 +52,7 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError("d_model, num_heads, head_dim, and num_generators must be positive")
         if generator_type not in {"full", "diagonal", "symmetric"}:
             raise ValueError(f"unsupported generator_type: {generator_type}")
-        if metric_mode not in {"exp", "residual", "unconstrained"}:
+        if metric_mode not in {"exp", "residual", "quadratic", "unconstrained"}:
             raise ValueError(f"unsupported metric_mode: {metric_mode}")
         if theta_init not in {"random_sphere", "circle"}:
             raise ValueError(f"unsupported theta_init: {theta_init}")
@@ -200,6 +200,8 @@ class LieGeneratedMetricAttention(nn.Module):
             diagonal = self.metric_beta * diagonal
             if self.metric_mode == "residual":
                 return torch.diag_embed(1.0 + diagonal)
+            if self.metric_mode == "quadratic":
+                return torch.diag_embed(1.0 + diagonal + 0.5 * diagonal.square())
             scale = torch.exp(diagonal)
             return torch.diag_embed(scale)
 
@@ -215,6 +217,14 @@ class LieGeneratedMetricAttention(nn.Module):
                 dtype=head_generators.dtype,
             )
             return eye[None, :, :] + head_generators
+        if self.metric_mode == "quadratic":
+            eye = torch.eye(
+                self.base_dim,
+                device=head_generators.device,
+                dtype=head_generators.dtype,
+            )
+            second_order = torch.matmul(head_generators, head_generators)
+            return eye[None, :, :] + head_generators + 0.5 * second_order
         metrics = torch.stack(
             [torch.linalg.matrix_exp(generator.float()) for generator in head_generators],
             dim=0,
@@ -251,7 +261,12 @@ class LieGeneratedMetricAttention(nn.Module):
         if self.generator_type == "diagonal" and self.metric_mode != "unconstrained":
             diagonal = torch.einsum("hm,md->hd", self.theta, self.generators)
             diagonal = self.metric_beta * diagonal
-            scale = 1.0 + diagonal if self.metric_mode == "residual" else torch.exp(diagonal)
+            if self.metric_mode == "residual":
+                scale = 1.0 + diagonal
+            elif self.metric_mode == "quadratic":
+                scale = 1.0 + diagonal + 0.5 * diagonal.square()
+            else:
+                scale = torch.exp(diagonal)
             scale = scale.view(
                 self.num_base_heads,
                 self.generated_heads_per_base,

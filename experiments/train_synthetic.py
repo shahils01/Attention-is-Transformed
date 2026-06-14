@@ -61,6 +61,7 @@ def parse_args() -> argparse.Namespace:
             "lgma",
             "lgma_v2",
             "lgma_residual",
+            "lgma_quad",
             "lgma_unconstrained",
             "lgma_value_diag",
             "lgma_multibase",
@@ -73,7 +74,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base_dim", type=int, default=None)
     parser.add_argument("--value_dim", type=int, default=None)
     parser.add_argument("--num_base_heads", type=int, default=1)
-    parser.add_argument("--metric_mode", choices=["exp", "residual", "unconstrained"], default="exp")
+    parser.add_argument(
+        "--metric_mode",
+        choices=["exp", "residual", "quadratic", "unconstrained"],
+        default="exp",
+    )
     parser.add_argument("--metric_beta", type=float, default=1.0)
     parser.add_argument("--theta_init", choices=["random_sphere", "circle"], default="random_sphere")
     parser.add_argument("--logit_scale_mode", choices=["sqrt_dim", "rms_metric"], default="sqrt_dim")

@@ -157,6 +157,23 @@ def test_residual_metric_mode_returns_identity_plus_delta():
     assert torch.allclose(layer.compute_metrics(), expected, atol=1e-6)
 
 
+def test_quadratic_metric_mode_returns_second_order_expansion():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        num_generators=3,
+        metric_mode="quadratic",
+        metric_beta=0.25,
+        use_sdpa=False,
+    )
+    generators = layer._dense_generators()
+    delta = 0.25 * torch.einsum("hm,mde->hde", layer.theta, generators)
+    expected = torch.eye(4)[None, :, :] + delta + 0.5 * torch.matmul(delta, delta)
+    assert torch.allclose(layer.compute_metrics(), expected, atol=1e-6)
+
+
 def test_unconstrained_metric_mode_learns_dense_per_head_metrics():
     torch.manual_seed(0)
     layer = LieGeneratedMetricAttention(

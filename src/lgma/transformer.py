@@ -25,6 +25,7 @@ AttentionType = Literal[
     "lgma",
     "lgma_v2",
     "lgma_residual",
+    "lgma_quad",
     "lgma_unconstrained",
     "lgma_value_diag",
     "lgma_multibase",
@@ -34,6 +35,7 @@ LGMA_ATTENTION_TYPES = {
     "lgma",
     "lgma_v2",
     "lgma_residual",
+    "lgma_quad",
     "lgma_unconstrained",
     "lgma_value_diag",
     "lgma_multibase",
@@ -108,6 +110,11 @@ def build_attention(
             theta_init = "circle"
         elif attention_type == "lgma_residual":
             metric_mode = "residual"
+            logit_scale_mode = "rms_metric"
+            learn_head_temperature = True
+            theta_init = "circle"
+        elif attention_type == "lgma_quad":
+            metric_mode = "quadratic"
             logit_scale_mode = "rms_metric"
             learn_head_temperature = True
             theta_init = "circle"
