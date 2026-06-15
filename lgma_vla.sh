@@ -3,6 +3,11 @@ set -euo pipefail
 
 TRAIN_METAS_PATH="${TRAIN_METAS_PATH:-/scratch/shahils/openpi/datasets/Libero-XVLA-format/libero_meta.json}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/shahils/lgma_runs/libero_vla_lgma_residual_multibase_b2_v1}"
+WANDB_PROJECT="${WANDB_PROJECT:-lgma_vla}"
+WANDB_RUN_NAME="${WANDB_RUN_NAME:-libero_vla_lgma_residual_multibase_b2_v1}"
+WANDB_GROUP="${WANDB_GROUP:-libero}"
+WANDB_TAGS="${WANDB_TAGS:-libero,vla,lgma_residual,multibase,b2}"
+WANDB_MODE="${WANDB_MODE:-online}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 if (( NPROC_PER_NODE > 1 )); then
   DEVICE="${DEVICE:-cuda}"
@@ -15,6 +20,11 @@ fi
 "${LAUNCHER[@]}" \
   --train_metas_path "${TRAIN_METAS_PATH}" \
   --output_dir "${OUTPUT_DIR}" \
+  --wandb_project "${WANDB_PROJECT}" \
+  --wandb_run_name "${WANDB_RUN_NAME}" \
+  --wandb_group "${WANDB_GROUP}" \
+  --wandb_tags "${WANDB_TAGS}" \
+  --wandb_mode "${WANDB_MODE}" \
   --attention lgma_residual \
   --num_base_heads 2 \
   --num_generators 16 \

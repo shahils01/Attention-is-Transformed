@@ -26,6 +26,7 @@ from lgma.diagnostics import (
     metric_delta_cosine_similarity,
     metric_distance_from_identity,
 )
+from lgma.tracking import finish_wandb, init_wandb_run, log_wandb
 from lgma.vla_data import XVLAMetaDataset
 from lgma.vla_model import VLAPolicyConfig, VLATransformerPolicy, ee6d_loss
 
@@ -84,6 +85,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--precision", choices=("fp32", "bf16", "fp16"), default="fp32")
+    parser.add_argument("--wandb_project", default=None)
+    parser.add_argument("--wandb_entity", default=None)
+    parser.add_argument("--wandb_run_name", default=None)
+    parser.add_argument("--wandb_group", default=None)
+    parser.add_argument(
+        "--wandb_tags",
+        default=None,
+        help="Comma-separated W&B tags, for example `libero,vla,lgma_residual,b2`.",
+    )
+    parser.add_argument(
+        "--wandb_mode",
+        choices=("online", "offline", "disabled"),
+        default="online",
+    )
+    parser.add_argument("--wandb_dir", type=Path, default=None)
     parser.add_argument(
         "--no_ddp",
         action="store_true",
@@ -382,6 +398,7 @@ def main() -> None:
     scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda" and args.precision == "fp16")
 
     raw_model = unwrap_model(model)
+    wandb_run = None
     if is_main_process(rank):
         first_attn = raw_model.attention_modules[0]
         accounting = attention_accounting(
@@ -393,6 +410,25 @@ def main() -> None:
         print(f"first_attention_accounting={accounting}")
         print(f"train_samples={len(train_dataset)} val_samples={len(val_dataset) if val_dataset is not None else 0}")
         print(f"distributed={distributed} world_size={world_size} device={device}")
+        wandb_run = init_wandb_run(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=args.wandb_run_name,
+            group=args.wandb_group,
+            tags=args.wandb_tags,
+            mode=args.wandb_mode,
+            output_dir=args.wandb_dir or args.output_dir,
+            config={
+                "args": vars(args),
+                "model_config": config.to_dict(),
+                "attention_accounting": accounting.__dict__,
+                "parameters": count_parameters(raw_model),
+                "train_samples": len(train_dataset),
+                "validation_samples": len(val_dataset) if val_dataset is not None else 0,
+                "distributed": distributed,
+                "world_size": world_size,
+            },
+        )
 
     log_path = args.output_dir / "metrics.jsonl"
     model.train()
@@ -438,12 +474,14 @@ def main() -> None:
                         logs.update(lgma_diagnostics(raw_model))
                         print(json.dumps(logs, sort_keys=True))
                         write_jsonl(log_path, logs)
+                        log_wandb(wandb_run, logs, step=step)
 
                 if val_loader is not None and args.eval_every > 0 and step % args.eval_every == 0:
                     logs = {"step": step, **evaluate(model, val_loader, device, args.precision, args.eval_batches, distributed)}
                     if is_main_process(rank):
                         print(json.dumps(logs, sort_keys=True))
                         write_jsonl(log_path, logs)
+                        log_wandb(wandb_run, logs, step=step)
 
                 if is_main_process(rank) and args.save_every > 0 and step % args.save_every == 0:
                     save_checkpoint(model, optimizer, config, args.output_dir, step)
@@ -453,7 +491,10 @@ def main() -> None:
 
         if is_main_process(rank):
             save_checkpoint(model, optimizer, config, args.output_dir, step)
+            log_wandb(wandb_run, {"final_step": step}, step=step)
     finally:
+        if is_main_process(rank):
+            finish_wandb(wandb_run)
         cleanup_distributed(distributed)
 
 
