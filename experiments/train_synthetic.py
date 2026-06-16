@@ -83,7 +83,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--theta_init", choices=["random_sphere", "circle"], default="random_sphere")
     parser.add_argument("--logit_scale_mode", choices=["sqrt_dim", "rms_metric"], default="sqrt_dim")
     parser.add_argument("--learn_head_temperature", action="store_true")
-    parser.add_argument("--value_transform", choices=["none", "diag"], default="none")
+    parser.add_argument(
+        "--value_transform",
+        choices=[
+            "none",
+            "diag",
+            "lie",
+            "lie_exp",
+            "lie_residual",
+            "lie_quadratic",
+            "unconstrained",
+        ],
+        default="none",
+    )
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--seq_len", type=int, default=32)

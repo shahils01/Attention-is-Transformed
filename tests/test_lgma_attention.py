@@ -235,6 +235,104 @@ def test_diagonal_value_transform_changes_values_not_attention_weights():
     assert not torch.allclose(y_base, y_transformed)
 
 
+def test_lie_value_transform_identity_matches_no_transform():
+    torch.manual_seed(0)
+    base = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        num_generators=2,
+        dropout=0.0,
+        use_sdpa=False,
+    )
+    transformed = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        num_generators=2,
+        dropout=0.0,
+        value_transform="lie_exp",
+        use_sdpa=False,
+    )
+    transformed.load_state_dict(base.state_dict(), strict=False)
+    transformed.value_theta.data.zero_()
+    x = torch.randn(2, 5, 16)
+    y_base, attn_base = base(x, need_weights=True)
+    y_transformed, attn_transformed = transformed(x, need_weights=True)
+    assert torch.allclose(attn_base, attn_transformed, atol=1e-6)
+    assert torch.allclose(y_base, y_transformed, atol=1e-6)
+
+
+def test_lie_value_transform_changes_values_not_attention_weights():
+    torch.manual_seed(0)
+    base = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        num_generators=1,
+        dropout=0.0,
+        stabilize_generators=False,
+        use_sdpa=False,
+    )
+    transformed = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        num_generators=1,
+        dropout=0.0,
+        stabilize_generators=False,
+        value_transform="lie_residual",
+        use_sdpa=False,
+    )
+    transformed.load_state_dict(base.state_dict(), strict=False)
+    transformed.value_theta.data.fill_(1.0)
+    transformed.value_generators.data.zero_()
+    transformed.value_generators.data[0] = 0.5 * torch.eye(4)
+    x = torch.randn(2, 5, 16)
+    y_base, attn_base = base(x, need_weights=True)
+    y_transformed, attn_transformed = transformed(x, need_weights=True)
+    assert torch.allclose(attn_base, attn_transformed, atol=1e-6)
+    assert not torch.allclose(y_base, y_transformed)
+
+
+def test_quadratic_lie_value_transform_returns_second_order_expansion():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        value_dim=3,
+        num_generators=2,
+        metric_beta=0.25,
+        value_transform="lie_quadratic",
+        use_sdpa=False,
+    )
+    generators = layer._dense_value_generators()
+    delta = 0.25 * torch.einsum("hm,mde->hde", layer.value_theta, generators)
+    expected = torch.eye(3)[None, :, :] + delta + 0.5 * torch.matmul(delta, delta)
+    assert torch.allclose(layer.compute_value_transforms(), expected, atol=1e-6)
+
+
+def test_lie_value_transform_follows_metric_mode():
+    for metric_mode, expected_mode in (
+        ("exp", "exp"),
+        ("residual", "residual"),
+        ("quadratic", "quadratic"),
+        ("unconstrained", "unconstrained"),
+    ):
+        layer = LieGeneratedMetricAttention(
+            16,
+            num_heads=2,
+            head_dim=4,
+            num_generators=2,
+            metric_mode=metric_mode,
+            value_transform="lie",
+            use_sdpa=False,
+        )
+        assert layer.value_transform_mode == expected_mode
+    assert hasattr(layer, "raw_value_transforms")
+
+
 def test_circle_theta_init_produces_distinct_head_coordinates():
     layer = LieGeneratedMetricAttention(
         16,

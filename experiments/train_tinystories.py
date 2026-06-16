@@ -130,7 +130,19 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=None,
     )
-    parser.add_argument("--value_transform", choices=["none", "diag"], default=None)
+    parser.add_argument(
+        "--value_transform",
+        choices=[
+            "none",
+            "diag",
+            "lie",
+            "lie_exp",
+            "lie_residual",
+            "lie_quadratic",
+            "unconstrained",
+        ],
+        default=None,
+    )
     parser.add_argument(
         "--metric_diversity_weight",
         type=float,

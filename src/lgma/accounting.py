@@ -61,7 +61,10 @@ def v_parameter_count(module: nn.Module) -> int:
 
 
 def generator_parameter_count(module: nn.Module) -> int:
-    return count_named_parameters(module, ("generators", "theta", "raw_metrics"))
+    return count_named_parameters(
+        module,
+        ("generators", "theta", "raw_metrics", "raw_value_transforms"),
+    )
 
 
 def dtype_size(dtype: torch.dtype) -> int:

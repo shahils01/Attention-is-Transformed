@@ -58,7 +58,15 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError(f"unsupported theta_init: {theta_init}")
         if logit_scale_mode not in {"sqrt_dim", "rms_metric"}:
             raise ValueError(f"unsupported logit_scale_mode: {logit_scale_mode}")
-        if value_transform not in {"none", "diag"}:
+        if value_transform not in {
+            "none",
+            "diag",
+            "lie",
+            "lie_exp",
+            "lie_residual",
+            "lie_quadratic",
+            "unconstrained",
+        }:
             raise ValueError(f"unsupported value_transform: {value_transform}")
         if metric_mode == "unconstrained" and generator_type == "diagonal":
             raise ValueError("unconstrained metric_mode requires dense metrics")
@@ -90,6 +98,7 @@ class LieGeneratedMetricAttention(nn.Module):
         self.logit_scale_mode = logit_scale_mode
         self.learn_head_temperature = learn_head_temperature
         self.value_transform = value_transform
+        self.value_transform_mode = self._resolve_value_transform_mode(value_transform, metric_mode)
 
         self.q_proj = nn.Linear(d_model, self.num_base_heads * self.base_dim, bias=bias)
         self.k_proj = nn.Linear(d_model, self.num_base_heads * self.base_dim, bias=bias)
@@ -107,8 +116,20 @@ class LieGeneratedMetricAttention(nn.Module):
             self.theta = nn.Parameter(torch.empty(num_heads, num_generators))
         if learn_head_temperature:
             self.head_logit_scale = nn.Parameter(torch.ones(num_heads))
-        if value_transform == "diag":
+        if self.value_transform_mode == "diag":
             self.value_scale = nn.Parameter(torch.ones(num_heads, self.value_dim))
+        elif self.value_transform_mode == "unconstrained":
+            self.raw_value_transforms = nn.Parameter(
+                torch.empty(num_heads, self.value_dim, self.value_dim)
+            )
+        elif self.value_transform_mode in {"exp", "residual", "quadratic"}:
+            if generator_type == "diagonal":
+                self.value_generators = nn.Parameter(torch.empty(num_generators, self.value_dim))
+            else:
+                self.value_generators = nn.Parameter(
+                    torch.empty(num_generators, self.value_dim, self.value_dim)
+                )
+            self.value_theta = nn.Parameter(torch.empty(num_heads, num_generators))
 
         self.reset_parameters()
 
@@ -133,18 +154,37 @@ class LieGeneratedMetricAttention(nn.Module):
             nn.init.ones_(self.head_logit_scale)
         if hasattr(self, "value_scale"):
             nn.init.ones_(self.value_scale)
+        if hasattr(self, "raw_value_transforms"):
+            nn.init.zeros_(self.raw_value_transforms)
+        if hasattr(self, "value_generators"):
+            generator_std = self.generator_init_scale / math.sqrt(self.value_dim)
+            nn.init.normal_(self.value_generators, mean=0.0, std=generator_std)
+            self._init_head_coordinates(self.value_theta)
+
+    @staticmethod
+    def _resolve_value_transform_mode(value_transform: str, metric_mode: str) -> str:
+        if value_transform == "lie":
+            if metric_mode == "unconstrained":
+                return "unconstrained"
+            return metric_mode
+        if value_transform.startswith("lie_"):
+            return value_transform.removeprefix("lie_")
+        return value_transform
 
     def _init_theta(self) -> None:
+        self._init_head_coordinates(self.theta)
+
+    def _init_head_coordinates(self, coordinates: torch.Tensor) -> None:
         if self.theta_init_scale <= 0:
-            nn.init.zeros_(self.theta)
+            nn.init.zeros_(coordinates)
             return
 
         with torch.no_grad():
             if self.theta_init == "circle" and self.num_generators >= 2:
                 head_ids = torch.arange(
                     self.num_heads,
-                    device=self.theta.device,
-                    dtype=self.theta.dtype,
+                    device=coordinates.device,
+                    dtype=coordinates.dtype,
                 )
                 base_ids = torch.div(
                     head_ids,
@@ -156,27 +196,38 @@ class LieGeneratedMetricAttention(nn.Module):
                     2 * math.pi * generated_ids / self.generated_heads_per_base
                     + math.pi * base_ids / max(self.generated_heads_per_base, 1)
                 )
-                directions = torch.zeros_like(self.theta)
+                directions = torch.zeros_like(coordinates)
                 directions[:, 0] = torch.cos(angles)
                 directions[:, 1] = torch.sin(angles)
                 if self.num_generators > 2:
                     noise = torch.randn(
                         self.num_heads,
                         self.num_generators - 2,
-                        device=self.theta.device,
-                        dtype=self.theta.dtype,
+                        device=coordinates.device,
+                        dtype=coordinates.dtype,
                     )
                     directions[:, 2:] = 0.01 * noise
             else:
-                directions = torch.randn_like(self.theta)
+                directions = torch.randn_like(coordinates)
             directions = directions / directions.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-            self.theta.copy_(directions * self.theta_init_scale)
+            coordinates.copy_(directions * self.theta_init_scale)
 
     def _dense_generators(self) -> torch.Tensor:
         if self.generator_type == "diagonal":
             return torch.diag_embed(self.generators)
 
         generators = self.generators
+        if self.generator_type == "symmetric":
+            generators = 0.5 * (generators + generators.transpose(-1, -2))
+        if self.stabilize_generators:
+            generators = self._make_trace_zero(generators)
+        return generators
+
+    def _dense_value_generators(self) -> torch.Tensor:
+        if self.generator_type == "diagonal":
+            return torch.diag_embed(self.value_generators)
+
+        generators = self.value_generators
         if self.generator_type == "symmetric":
             generators = 0.5 * (generators + generators.transpose(-1, -2))
         if self.stabilize_generators:
@@ -236,6 +287,60 @@ class LieGeneratedMetricAttention(nn.Module):
         if self.metric_mode == "unconstrained":
             return self.raw_metrics
         return self._dense_generators()
+
+    def compute_value_transforms(self) -> torch.Tensor:
+        if self.value_transform_mode == "none":
+            eye = torch.eye(
+                self.value_dim,
+                device=self.v_proj.weight.device,
+                dtype=self.v_proj.weight.dtype,
+            )
+            return eye[None, :, :].expand(self.num_heads, self.value_dim, self.value_dim)
+        if self.value_transform_mode == "diag":
+            return torch.diag_embed(self.value_scale)
+        if self.value_transform_mode == "unconstrained":
+            eye = torch.eye(
+                self.value_dim,
+                device=self.raw_value_transforms.device,
+                dtype=self.raw_value_transforms.dtype,
+            )
+            return eye[None, :, :] + self.metric_beta * self.raw_value_transforms
+
+        if self.generator_type == "diagonal":
+            diagonal = torch.einsum("hm,md->hd", self.value_theta, self.value_generators)
+            diagonal = self.metric_beta * diagonal
+            if self.value_transform_mode == "residual":
+                return torch.diag_embed(1.0 + diagonal)
+            if self.value_transform_mode == "quadratic":
+                return torch.diag_embed(1.0 + diagonal + 0.5 * diagonal.square())
+            scale = torch.exp(diagonal)
+            return torch.diag_embed(scale)
+
+        generators = self._dense_value_generators()
+        head_generators = torch.einsum("hm,mde->hde", self.value_theta, generators)
+        head_generators = self.metric_beta * head_generators
+        if self.generator_type == "symmetric":
+            head_generators = 0.5 * (head_generators + head_generators.transpose(-1, -2))
+        if self.value_transform_mode == "residual":
+            eye = torch.eye(
+                self.value_dim,
+                device=head_generators.device,
+                dtype=head_generators.dtype,
+            )
+            return eye[None, :, :] + head_generators
+        if self.value_transform_mode == "quadratic":
+            eye = torch.eye(
+                self.value_dim,
+                device=head_generators.device,
+                dtype=head_generators.dtype,
+            )
+            second_order = torch.matmul(head_generators, head_generators)
+            return eye[None, :, :] + head_generators + 0.5 * second_order
+        transforms = torch.stack(
+            [torch.linalg.matrix_exp(generator.float()) for generator in head_generators],
+            dim=0,
+        )
+        return transforms.to(dtype=head_generators.dtype)
 
     def _project(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.q_proj(x), self.k_proj(x), self.v_proj(x)
@@ -320,8 +425,31 @@ class LieGeneratedMetricAttention(nn.Module):
             seq_len,
             self.value_dim,
         )
+        if self.value_transform_mode in {"exp", "residual", "quadratic"} and self.generator_type == "diagonal":
+            diagonal = torch.einsum("hm,md->hd", self.value_theta, self.value_generators)
+            diagonal = self.metric_beta * diagonal
+            if self.value_transform_mode == "residual":
+                scale = 1.0 + diagonal
+            elif self.value_transform_mode == "quadratic":
+                scale = 1.0 + diagonal + 0.5 * diagonal.square()
+            else:
+                scale = torch.exp(diagonal)
+            scale = scale.view(
+                self.num_base_heads,
+                self.generated_heads_per_base,
+                self.value_dim,
+            )
+            values = values * scale[None, :, :, None, :]
+        elif self.value_transform_mode in {"exp", "residual", "quadratic", "unconstrained"}:
+            transforms = self.compute_value_transforms().view(
+                self.num_base_heads,
+                self.generated_heads_per_base,
+                self.value_dim,
+                self.value_dim,
+            )
+            values = torch.einsum("nbktd,bkde->nbkte", values, transforms)
         values = values.reshape(batch, self.num_heads, seq_len, self.value_dim)
-        if hasattr(self, "value_scale"):
+        if self.value_transform_mode == "diag":
             values = values * self.value_scale[None, :, None, :]
         return values
 
