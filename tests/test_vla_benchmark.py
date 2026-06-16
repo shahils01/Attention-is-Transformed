@@ -80,7 +80,11 @@ def _write_encoded_libero_fixture(root: Path, length: int = 8) -> Path:
     return meta_path
 
 
-def _config(attention: str, num_base_heads: int = 1) -> VLAPolicyConfig:
+def _config(
+    attention: str,
+    num_base_heads: int = 1,
+    value_transform: str = "none",
+) -> VLAPolicyConfig:
     return VLAPolicyConfig(
         image_size=16,
         num_views=2,
@@ -94,6 +98,7 @@ def _config(attention: str, num_base_heads: int = 1) -> VLAPolicyConfig:
         attention=attention,  # type: ignore[arg-type]
         num_generators=2,
         num_base_heads=num_base_heads,
+        value_transform=value_transform,
     )
 
 
@@ -105,6 +110,7 @@ def _config(attention: str, num_base_heads: int = 1) -> VLAPolicyConfig:
         ("lgma", 1),
         ("lgma_multibase", 2),
         ("lgma_residual", 2),
+        ("lgma_quad", 2),
         ("lgma_unconstrained", 2),
     ],
 )
@@ -128,6 +134,50 @@ def test_vla_forward_backward_for_attention_variants(attention: str, num_base_he
     assert pred.shape == (2, 3, 20)
     loss = sum(ee6d_loss(pred, batch["action"]).values())
     loss.backward()
+    assert all(
+        param.grad is None or torch.isfinite(param.grad).all()
+        for param in model.parameters()
+    )
+
+
+@pytest.mark.parametrize(
+    ("attention", "value_transform"),
+    [
+        ("lgma", "lie"),
+        ("lgma_residual", "lie"),
+        ("lgma_quad", "lie"),
+        ("lgma_unconstrained", "lie"),
+    ],
+)
+def test_vla_forward_backward_for_value_lie_variants(attention: str, value_transform: str):
+    torch.manual_seed(0)
+    model = VLATransformerPolicy(
+        _config(attention, num_base_heads=2, value_transform=value_transform)
+    )
+    batch = {
+        "image_input": torch.randn(2, 2, 3, 16, 16),
+        "image_mask": torch.ones(2, 2, dtype=torch.bool),
+        "text_token_ids": torch.randint(0, 128, (2, 8)),
+        "proprio": torch.randn(2, 20),
+        "action": torch.randn(2, 3, 20),
+    }
+    batch["action"][..., (9, 19)] = torch.randint(0, 2, (2, 3, 2)).float()
+    pred = model(
+        image_input=batch["image_input"],
+        image_mask=batch["image_mask"],
+        text_token_ids=batch["text_token_ids"],
+        proprio=batch["proprio"],
+    )
+    assert pred.shape == (2, 3, 20)
+    loss = sum(ee6d_loss(pred, batch["action"]).values())
+    loss.backward()
+    first_attn = model.attention_modules[0]
+    assert getattr(first_attn, "value_transform_mode") in {
+        "exp",
+        "residual",
+        "quadratic",
+        "unconstrained",
+    }
     assert all(
         param.grad is None or torch.isfinite(param.grad).all()
         for param in model.parameters()

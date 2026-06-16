@@ -8,6 +8,7 @@ WANDB_RUN_NAME="${WANDB_RUN_NAME:-libero_vla_lgma_residual_multibase_b2_v1}"
 WANDB_GROUP="${WANDB_GROUP:-libero}"
 WANDB_TAGS="${WANDB_TAGS:-libero,vla,lgma_residual,multibase,b2}"
 WANDB_MODE="${WANDB_MODE:-online}"
+VALUE_TRANSFORM="${VALUE_TRANSFORM:-none}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 if (( NPROC_PER_NODE > 1 )); then
   DEVICE="${DEVICE:-cuda}"
@@ -29,6 +30,7 @@ fi
   --num_base_heads 2 \
   --num_generators 16 \
   --generator_type full \
+  --value_transform "${VALUE_TRANSFORM}" \
   --device "${DEVICE}" \
   --batch_size 128 \
   --num_workers 4 \

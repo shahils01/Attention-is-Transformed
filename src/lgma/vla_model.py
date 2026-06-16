@@ -15,7 +15,10 @@ VLAAttentionType = Literal[
     "lgma",
     "lgma_multibase",
     "lgma_residual",
+    "lgma_quad",
     "lgma_unconstrained",
+    "lgma_value_diag",
+    "lgma_multibase_value_diag",
 ]
 
 
@@ -42,6 +45,7 @@ class VLAPolicyConfig:
     num_base_heads: int = 1
     base_dim: int | None = None
     value_dim: int | None = None
+    value_transform: str = "none"
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -110,6 +114,7 @@ class VLATransformerPolicy(nn.Module):
                     generator_init_scale=config.generator_init_scale,
                     base_dim=config.base_dim,
                     value_dim=config.value_dim,
+                    value_transform=config.value_transform,
                     num_base_heads=config.num_base_heads,
                 )
                 for _ in range(config.num_layers)
