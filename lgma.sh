@@ -8,20 +8,17 @@ python experiments/train_tinystories.py \
   --log_every 100 \
   --eval_every 1000 \
   --save_every 5000 \
-  --output_dir /scratch/shahils/lgma_runs/large_tinystories_lgma_multibase_b2_v1 \
+  --output_dir /scratch/shahils/lgma_runs/large_tinystories_lgma_unconstrained_multibase_b4_h16 \
   --diagnostic_every 1000 \
   --diagnostic_batches 2 \
   --wandb_project lgma \
-  --wandb_run_name tinystory_lgma_multibase_b2 \
+  --wandb_run_name tinystory_lgma_residual_multibase_b4 \
   --wandb_group tinystories \
-  --wandb_tags tinystory,lgma,multibase,b2 \
+  --wandb_tags tinystory,lgma,residual,multibase,b4 \
   --induced_metric_diversity_weight 1e-3 \
   --metric_diversity_weight 1e-4 \
-  --attention lgma_multibase \
   --d_model 1024 \
   --num_layers 12 \
-  --num_heads 16 \
-  --num_base_heads 2 \
   --head_dim 64 \
   --base_dim 64 \
   --value_dim 64 \
@@ -32,5 +29,6 @@ python experiments/train_tinystories.py \
   --lr 3e-4 \
   --weight_decay 0.01 \
   --precision bf16 \
-
+  --attention lgma_residual --num_heads 16 --num_base_heads 4 \
+  --value_transform lie \
   # --resume_checkpoint /scratch/shahils/lgma_runs/large_tinystories_lgma_multibase_b2/checkpoint_step_15000.pt \
