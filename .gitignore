@@ -1,3 +1,4 @@
 # Donot track pyc files
 *.pyc
 outputs
+logs

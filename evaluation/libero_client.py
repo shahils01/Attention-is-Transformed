@@ -215,7 +215,7 @@ def main() -> None:
     parser.add_argument("--init_seed", type=int, default=42)
     parser.add_argument("--act_type", choices=["abs", "rel"], default="abs")
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--action_chunk", type=int, default=None)
+    parser.add_argument("--action_chunk", type=int, default=10)
     args = parser.parse_args()
 
     results = eval_libero(
