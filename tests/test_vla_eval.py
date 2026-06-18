@@ -17,6 +17,7 @@ from lgma.vla_eval import (
     rot6d_to_axis_angle,
     rot6d_to_matrix,
     rot6d_to_quat_xyzw,
+    rotmat_to_rot6d,
     single_arm_to_proprio20,
 )
 from lgma.vla_model import VLAPolicyConfig, VLATransformerPolicy
@@ -48,6 +49,20 @@ def test_rotation_conversion_identity_shapes():
     assert np.allclose(axis_angle, np.zeros(3), atol=1e-5)
     assert quat.shape == (4,)
     assert np.allclose(quat, np.array([0.0, 0.0, 0.0, 1.0]), atol=1e-5)
+
+
+def test_rotation_conversion_column_layout_for_libero():
+    row_identity = np.array([1.0, 0.0, 0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+    column_identity = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+
+    assert np.allclose(rotmat_to_rot6d(np.eye(3, dtype=np.float32)), row_identity, atol=1e-5)
+    assert np.allclose(
+        rotmat_to_rot6d(np.eye(3, dtype=np.float32), layout="column"),
+        column_identity,
+        atol=1e-5,
+    )
+    assert np.allclose(rot6d_to_matrix(column_identity, layout="column"), np.eye(3), atol=1e-5)
+    assert np.allclose(rot6d_to_axis_angle(column_identity, layout="column"), np.zeros(3), atol=1e-5)
 
 
 def test_euler_and_proprio_helpers():

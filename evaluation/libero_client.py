@@ -65,7 +65,11 @@ class LIBEROLocalPolicy:
         self.planner.reset()
 
     def step(self, obs: dict, language_instruction: str) -> np.ndarray:
-        rot6d = obs["robo_ori"] if np.asarray(obs["robo_ori"]).shape[-1] == 6 else rotmat_to_rot6d(obs["robo_ori"])
+        rot6d = (
+            obs["robo_ori"]
+            if np.asarray(obs["robo_ori"]).shape[-1] == 6
+            else rotmat_to_rot6d(obs["robo_ori"], layout="column")
+        )
         left_proprio = np.concatenate([obs["robo_pos"], rot6d, np.array([0.0], dtype=np.float32)], axis=0)
         proprio = single_arm_to_proprio20(left_proprio)
         action20 = self.planner.next_action_plan(
@@ -77,7 +81,7 @@ class LIBEROLocalPolicy:
             proprio=proprio,
         )
         left = action20[:10]
-        axis_angle = rot6d_to_axis_angle(left[3:9])
+        axis_angle = rot6d_to_axis_angle(left[3:9], layout="column")
         gripper = np.array([1.0 if left[9] > 0.5 else -1.0], dtype=np.float32)
         return np.concatenate([left[:3], axis_angle, gripper], axis=0).astype(np.float32)
 
@@ -143,7 +147,7 @@ class LIBEROEvaluator:
         try:
             for _ in tqdm(range(self.eval_horizon), desc=language):
                 robot = env.env.robots[0]
-                obs["robo_ori"] = rotmat_to_rot6d(robot.controller.ee_ori_mat)
+                obs["robo_ori"] = rotmat_to_rot6d(robot.controller.ee_ori_mat, layout="column")
                 obs["robo_pos"] = robot.controller.ee_pos
                 action = policy.step(obs, language)
                 frames.append(_flip_agentview(obs["agentview_image"]))

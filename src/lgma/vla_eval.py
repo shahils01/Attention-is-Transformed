@@ -3,13 +3,15 @@ from __future__ import annotations
 import math
 from collections import deque
 from pathlib import Path
-from typing import Deque, Iterable
+from typing import Deque, Iterable, Literal
 
 import numpy as np
 import torch
 
 from lgma.vla_data import _load_image_tensor, hash_instruction
 from lgma.vla_model import VLAPolicyConfig, VLATransformerPolicy
+
+Rot6DLayout = Literal["row", "column"]
 
 
 def load_vla_policy(
@@ -43,19 +45,31 @@ def euler_xyz_to_rot6d(euler: np.ndarray) -> np.ndarray:
     return out[0] if np.asarray(euler).ndim == 1 else out
 
 
-def rotmat_to_rot6d(rot: np.ndarray) -> np.ndarray:
+def rotmat_to_rot6d(rot: np.ndarray, layout: Rot6DLayout = "row") -> np.ndarray:
     r = np.asarray(rot, dtype=np.float64)
+    if layout not in {"row", "column"}:
+        raise ValueError("layout must be 'row' or 'column'")
     if r.shape == (3, 3):
+        if layout == "column":
+            return np.concatenate([r[:, 0], r[:, 1]], axis=0).astype(np.float32)
         return r[:, :2].reshape(6).astype(np.float32)
+    if layout == "column":
+        return np.concatenate([r[:, :, 0], r[:, :, 1]], axis=-1).astype(np.float32)
     return r[:, :, :2].reshape(r.shape[0], 6).astype(np.float32)
 
 
-def rot6d_to_matrix(rot6d: np.ndarray) -> np.ndarray:
+def rot6d_to_matrix(rot6d: np.ndarray, layout: Rot6DLayout = "row") -> np.ndarray:
+    if layout not in {"row", "column"}:
+        raise ValueError("layout must be 'row' or 'column'")
     r6 = np.asarray(rot6d, dtype=np.float64)
     single = r6.ndim == 1
     r6 = r6.reshape(-1, 6)
-    a1 = r6[:, 0:5:2]
-    a2 = r6[:, 1:6:2]
+    if layout == "column":
+        a1 = r6[:, :3]
+        a2 = r6[:, 3:6]
+    else:
+        a1 = r6[:, 0:5:2]
+        a2 = r6[:, 1:6:2]
     b1 = a1 / np.clip(np.linalg.norm(a1, axis=-1, keepdims=True), 1e-8, None)
     proj = np.sum(b1 * a2, axis=-1, keepdims=True) * b1
     b2 = a2 - proj
@@ -65,8 +79,8 @@ def rot6d_to_matrix(rot6d: np.ndarray) -> np.ndarray:
     return mat[0] if single else mat
 
 
-def rot6d_to_axis_angle(rot6d: np.ndarray) -> np.ndarray:
-    mat = rot6d_to_matrix(rot6d)
+def rot6d_to_axis_angle(rot6d: np.ndarray, layout: Rot6DLayout = "row") -> np.ndarray:
+    mat = rot6d_to_matrix(rot6d, layout=layout)
     single = mat.ndim == 2
     mats = mat[None] if single else mat
     output = []
@@ -91,8 +105,8 @@ def rot6d_to_axis_angle(rot6d: np.ndarray) -> np.ndarray:
     return arr[0] if single else arr
 
 
-def rot6d_to_quat_xyzw(rot6d: np.ndarray) -> np.ndarray:
-    mat = rot6d_to_matrix(rot6d)
+def rot6d_to_quat_xyzw(rot6d: np.ndarray, layout: Rot6DLayout = "row") -> np.ndarray:
+    mat = rot6d_to_matrix(rot6d, layout=layout)
     single = mat.ndim == 2
     mats = mat[None] if single else mat
     quats = []
