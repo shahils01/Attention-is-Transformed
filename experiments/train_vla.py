@@ -67,6 +67,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generator_init_scale", type=float, default=0.02)
     parser.add_argument("--base_dim", type=int, default=None)
     parser.add_argument("--value_dim", type=int, default=None)
+    parser.add_argument(
+        "--value_beta",
+        type=float,
+        default=None,
+        help="Optional separate gain for value Lie transforms. Defaults to metric_beta.",
+    )
     parser.add_argument("--value_transform", choices=VALUE_TRANSFORMS, default="none")
 
     parser.add_argument("--image_size", type=int, default=128)
@@ -188,6 +194,7 @@ def make_config(args: argparse.Namespace) -> VLAPolicyConfig:
         num_base_heads=num_base_heads,
         base_dim=args.base_dim,
         value_dim=args.value_dim,
+        value_beta=args.value_beta,
         value_transform=args.value_transform,
     )
 

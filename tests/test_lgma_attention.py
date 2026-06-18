@@ -313,6 +313,32 @@ def test_quadratic_lie_value_transform_returns_second_order_expansion():
     assert torch.allclose(layer.compute_value_transforms(), expected, atol=1e-6)
 
 
+def test_value_beta_scales_value_lie_separately_from_metric_beta():
+    layer = LieGeneratedMetricAttention(
+        8,
+        num_heads=1,
+        head_dim=3,
+        base_dim=3,
+        value_dim=3,
+        num_generators=1,
+        generator_type="diagonal",
+        metric_mode="residual",
+        metric_beta=1.0,
+        value_beta=0.25,
+        value_transform="lie_residual",
+        use_sdpa=False,
+    )
+    layer.theta.data.fill_(1.0)
+    layer.generators.data.fill_(2.0)
+    layer.value_theta.data.fill_(1.0)
+    layer.value_generators.data.fill_(4.0)
+
+    expected_metric = torch.diag_embed(torch.full((1, 3), 3.0))
+    expected_value_transform = torch.diag_embed(torch.full((1, 3), 2.0))
+    assert torch.allclose(layer.compute_metrics(), expected_metric)
+    assert torch.allclose(layer.compute_value_transforms(), expected_value_transform)
+
+
 def test_lie_value_transform_follows_metric_mode():
     for metric_mode, expected_mode in (
         ("exp", "exp"),

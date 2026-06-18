@@ -45,6 +45,7 @@ class VLAPolicyConfig:
     num_base_heads: int = 1
     base_dim: int | None = None
     value_dim: int | None = None
+    value_beta: float | None = None
     value_transform: str = "none"
 
     def to_dict(self) -> dict[str, object]:
@@ -114,6 +115,7 @@ class VLATransformerPolicy(nn.Module):
                     generator_init_scale=config.generator_init_scale,
                     base_dim=config.base_dim,
                     value_dim=config.value_dim,
+                    value_beta=config.value_beta,
                     value_transform=config.value_transform,
                     num_base_heads=config.num_base_heads,
                 )

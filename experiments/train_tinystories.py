@@ -123,6 +123,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument("--metric_beta", type=float, default=None)
+    parser.add_argument(
+        "--value_beta",
+        type=float,
+        default=None,
+        help="Optional separate gain for value Lie transforms. Defaults to metric_beta.",
+    )
     parser.add_argument("--theta_init", choices=["random_sphere", "circle"], default=None)
     parser.add_argument("--logit_scale_mode", choices=["sqrt_dim", "rms_metric"], default=None)
     parser.add_argument(
@@ -289,6 +295,7 @@ def effective_attention_config(module) -> dict[str, object]:
         "generator_type",
         "metric_mode",
         "metric_beta",
+        "value_beta",
         "theta_init",
         "logit_scale_mode",
         "learn_head_temperature",
@@ -322,6 +329,7 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
         "num_base_heads": 1,
         "metric_mode": "exp",
         "metric_beta": 1.0,
+        "value_beta": None,
         "theta_init": "random_sphere",
         "logit_scale_mode": "sqrt_dim",
         "learn_head_temperature": False,
@@ -347,6 +355,7 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
         "generator_init_scale": args.generator_init_scale,
         "metric_mode": args.metric_mode,
         "metric_beta": args.metric_beta,
+        "value_beta": args.value_beta,
         "theta_init": args.theta_init,
         "logit_scale_mode": args.logit_scale_mode,
         "learn_head_temperature": args.learn_head_temperature,

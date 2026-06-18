@@ -41,6 +41,7 @@ class LieGeneratedMetricAttention(nn.Module):
         value_dim: int | None = None,
         metric_mode: str = "exp",
         metric_beta: float = 1.0,
+        value_beta: float | None = None,
         theta_init: str = "random_sphere",
         logit_scale_mode: str = "sqrt_dim",
         learn_head_temperature: bool = False,
@@ -94,6 +95,7 @@ class LieGeneratedMetricAttention(nn.Module):
         self.generator_init_scale = generator_init_scale
         self.metric_mode = metric_mode
         self.metric_beta = metric_beta
+        self.value_beta = metric_beta if value_beta is None else value_beta
         self.theta_init = theta_init
         self.logit_scale_mode = logit_scale_mode
         self.learn_head_temperature = learn_head_temperature
@@ -304,11 +306,11 @@ class LieGeneratedMetricAttention(nn.Module):
                 device=self.raw_value_transforms.device,
                 dtype=self.raw_value_transforms.dtype,
             )
-            return eye[None, :, :] + self.metric_beta * self.raw_value_transforms
+            return eye[None, :, :] + self.value_beta * self.raw_value_transforms
 
         if self.generator_type == "diagonal":
             diagonal = torch.einsum("hm,md->hd", self.value_theta, self.value_generators)
-            diagonal = self.metric_beta * diagonal
+            diagonal = self.value_beta * diagonal
             if self.value_transform_mode == "residual":
                 return torch.diag_embed(1.0 + diagonal)
             if self.value_transform_mode == "quadratic":
@@ -318,7 +320,7 @@ class LieGeneratedMetricAttention(nn.Module):
 
         generators = self._dense_value_generators()
         head_generators = torch.einsum("hm,mde->hde", self.value_theta, generators)
-        head_generators = self.metric_beta * head_generators
+        head_generators = self.value_beta * head_generators
         if self.generator_type == "symmetric":
             head_generators = 0.5 * (head_generators + head_generators.transpose(-1, -2))
         if self.value_transform_mode == "residual":
@@ -427,7 +429,7 @@ class LieGeneratedMetricAttention(nn.Module):
         )
         if self.value_transform_mode in {"exp", "residual", "quadratic"} and self.generator_type == "diagonal":
             diagonal = torch.einsum("hm,md->hd", self.value_theta, self.value_generators)
-            diagonal = self.metric_beta * diagonal
+            diagonal = self.value_beta * diagonal
             if self.value_transform_mode == "residual":
                 scale = 1.0 + diagonal
             elif self.value_transform_mode == "quadratic":
