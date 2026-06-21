@@ -16,6 +16,10 @@ python experiments/train_tinystories.py \
   --base_dim 32 \
   --num_generators 4 \
   --metric_beta 0.25 \
+  --metric_clip_min 0.25 \
+  --metric_clip_max 4.0 \
+  --ah_norm_weight 1e-4 \
+  --ah_norm_max 2.0 \
   --diagnostic_every 1000 \
   --diagnostic_batches 2 \
   --wandb_project lgma \

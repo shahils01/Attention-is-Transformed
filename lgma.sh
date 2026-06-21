@@ -24,6 +24,10 @@ python experiments/train_tinystories.py \
   --value_dim 64 \
   --num_generators 16 \
   --metric_beta 0.25 \
+  --metric_clip_min 0.25 \
+  --metric_clip_max 4.0 \
+  --ah_norm_weight 1e-4 \
+  --ah_norm_max 2.0 \
   --context_length 1024 \
   --dropout 0.1 \
   --lr 3e-4 \

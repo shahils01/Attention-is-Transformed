@@ -495,6 +495,74 @@ def test_diagonal_fast_path_matches_dense_diagonal_metric_scores():
     assert torch.allclose(scores_fast, scores_dense, atol=1e-6)
 
 
+def test_compute_head_generators_returns_beta_scaled_ah():
+    layer = LieGeneratedMetricAttention(
+        8,
+        num_heads=2,
+        head_dim=2,
+        num_generators=1,
+        generator_type="full",
+        stabilize_generators=False,
+        metric_beta=0.5,
+        use_sdpa=False,
+    )
+    layer.theta.data = torch.tensor([[2.0], [4.0]])
+    layer.generators.data.zero_()
+    layer.generators.data[0] = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+
+    expected = torch.stack(
+        [
+            torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+            torch.tensor([[2.0, 4.0], [6.0, 8.0]]),
+        ]
+    )
+    assert torch.allclose(layer.compute_head_generators(), expected)
+
+
+def test_metric_singular_value_clipping_bounds_metrics():
+    layer = LieGeneratedMetricAttention(
+        8,
+        num_heads=1,
+        head_dim=2,
+        num_generators=1,
+        generator_type="diagonal",
+        metric_clip_min=0.25,
+        metric_clip_max=4.0,
+        use_sdpa=False,
+    )
+    layer.theta.data.fill_(1.0)
+    layer.generators.data[0] = torch.tensor([3.0, -3.0])
+
+    singular_values = torch.linalg.svdvals(layer.compute_metrics())
+    assert torch.all(singular_values >= 0.25 - 1e-6)
+    assert torch.all(singular_values <= 4.0 + 1e-6)
+
+
+def test_diagonal_metric_clipping_path_matches_dense_scores():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=3,
+        head_dim=4,
+        num_generators=2,
+        dropout=0.0,
+        generator_type="diagonal",
+        metric_clip_min=0.25,
+        metric_clip_max=4.0,
+        use_sdpa=False,
+    )
+    layer.theta.data.fill_(1.0)
+    layer.generators.data.fill_(2.0)
+    x = torch.randn(2, 5, 16)
+    q, k, _ = layer._project(x)
+    q_clipped = layer._apply_metric_to_queries(q)
+    metrics = layer.compute_metrics()
+    q_dense = torch.einsum("btd,hde->bhte", q, metrics)
+    scores_clipped = torch.einsum("bhtd,bsd->bhts", q_clipped, k)
+    scores_dense = torch.einsum("bhtd,bsd->bhts", q_dense, k)
+    assert torch.allclose(scores_clipped, scores_dense, atol=1e-5)
+
+
 def test_stabilized_generators_are_trace_zero():
     torch.manual_seed(0)
     layer = LieGeneratedMetricAttention(

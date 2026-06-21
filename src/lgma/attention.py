@@ -41,6 +41,8 @@ class LieGeneratedMetricAttention(nn.Module):
         value_dim: int | None = None,
         metric_mode: str = "exp",
         metric_beta: float = 1.0,
+        metric_clip_min: float | None = None,
+        metric_clip_max: float | None = None,
         value_beta: float | None = None,
         theta_init: str = "random_sphere",
         logit_scale_mode: str = "sqrt_dim",
@@ -71,6 +73,14 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError(f"unsupported value_transform: {value_transform}")
         if metric_mode == "unconstrained" and generator_type == "diagonal":
             raise ValueError("unconstrained metric_mode requires dense metrics")
+        if metric_clip_min is not None and metric_clip_min < 0:
+            raise ValueError("metric_clip_min must be non-negative")
+        if (
+            metric_clip_min is not None
+            and metric_clip_max is not None
+            and metric_clip_min > metric_clip_max
+        ):
+            raise ValueError("metric_clip_min must be <= metric_clip_max")
         if num_base_heads <= 0:
             raise ValueError("num_base_heads must be positive")
         if num_heads % num_base_heads != 0:
@@ -95,6 +105,8 @@ class LieGeneratedMetricAttention(nn.Module):
         self.generator_init_scale = generator_init_scale
         self.metric_mode = metric_mode
         self.metric_beta = metric_beta
+        self.metric_clip_min = metric_clip_min
+        self.metric_clip_max = metric_clip_max
         self.value_beta = metric_beta if value_beta is None else value_beta
         self.theta_init = theta_init
         self.logit_scale_mode = logit_scale_mode
@@ -243,33 +255,57 @@ class LieGeneratedMetricAttention(nn.Module):
         eye = torch.eye(dim, device=generators.device, dtype=generators.dtype)
         return generators - (trace[..., None, None] / dim) * eye
 
-    def compute_metrics(self) -> torch.Tensor:
+    def compute_head_generators(self) -> torch.Tensor:
+        """Return dense per-head A_h generators after applying metric_beta."""
         if self.metric_mode == "unconstrained":
-            eye = torch.eye(self.base_dim, device=self.raw_metrics.device, dtype=self.raw_metrics.dtype)
-            return eye[None, :, :] + self.metric_beta * self.raw_metrics
-
-        if self.generator_type == "diagonal":
-            diagonal = torch.einsum("hm,md->hd", self.theta, self.generators)
-            diagonal = self.metric_beta * diagonal
-            if self.metric_mode == "residual":
-                return torch.diag_embed(1.0 + diagonal)
-            if self.metric_mode == "quadratic":
-                return torch.diag_embed(1.0 + diagonal + 0.5 * diagonal.square())
-            scale = torch.exp(diagonal)
-            return torch.diag_embed(scale)
-
+            return self.metric_beta * self.raw_metrics
         generators = self._dense_generators()
         head_generators = torch.einsum("hm,mde->hde", self.theta, generators)
         head_generators = self.metric_beta * head_generators
         if self.generator_type == "symmetric":
             head_generators = 0.5 * (head_generators + head_generators.transpose(-1, -2))
+        return head_generators
+
+    def _clip_metric_singular_values(self, metrics: torch.Tensor) -> torch.Tensor:
+        if self.metric_clip_min is None and self.metric_clip_max is None:
+            return metrics
+        u, singular_values, vh = torch.linalg.svd(metrics.float(), full_matrices=False)
+        clipped = singular_values
+        if self.metric_clip_min is not None:
+            clipped = clipped.clamp_min(self.metric_clip_min)
+        if self.metric_clip_max is not None:
+            clipped = clipped.clamp_max(self.metric_clip_max)
+        clipped_metrics = u @ torch.diag_embed(clipped) @ vh
+        return clipped_metrics.to(dtype=metrics.dtype)
+
+    def compute_metrics(self) -> torch.Tensor:
+        if self.metric_mode == "unconstrained":
+            eye = torch.eye(self.base_dim, device=self.raw_metrics.device, dtype=self.raw_metrics.dtype)
+            metrics = eye[None, :, :] + self.metric_beta * self.raw_metrics
+            return self._clip_metric_singular_values(metrics)
+
+        if self.generator_type == "diagonal":
+            diagonal = torch.einsum("hm,md->hd", self.theta, self.generators)
+            diagonal = self.metric_beta * diagonal
+            if self.metric_mode == "residual":
+                metrics = torch.diag_embed(1.0 + diagonal)
+                return self._clip_metric_singular_values(metrics)
+            if self.metric_mode == "quadratic":
+                metrics = torch.diag_embed(1.0 + diagonal + 0.5 * diagonal.square())
+                return self._clip_metric_singular_values(metrics)
+            scale = torch.exp(diagonal)
+            metrics = torch.diag_embed(scale)
+            return self._clip_metric_singular_values(metrics)
+
+        head_generators = self.compute_head_generators()
         if self.metric_mode == "residual":
             eye = torch.eye(
                 self.base_dim,
                 device=head_generators.device,
                 dtype=head_generators.dtype,
             )
-            return eye[None, :, :] + head_generators
+            metrics = eye[None, :, :] + head_generators
+            return self._clip_metric_singular_values(metrics)
         if self.metric_mode == "quadratic":
             eye = torch.eye(
                 self.base_dim,
@@ -277,12 +313,14 @@ class LieGeneratedMetricAttention(nn.Module):
                 dtype=head_generators.dtype,
             )
             second_order = torch.matmul(head_generators, head_generators)
-            return eye[None, :, :] + head_generators + 0.5 * second_order
+            metrics = eye[None, :, :] + head_generators + 0.5 * second_order
+            return self._clip_metric_singular_values(metrics)
         metrics = torch.stack(
             [torch.linalg.matrix_exp(generator.float()) for generator in head_generators],
             dim=0,
         )
-        return metrics.to(dtype=head_generators.dtype)
+        metrics = metrics.to(dtype=head_generators.dtype)
+        return self._clip_metric_singular_values(metrics)
 
     def effective_generators(self) -> torch.Tensor:
         """Return dense stabilized generator basis for diagnostics."""
@@ -365,7 +403,12 @@ class LieGeneratedMetricAttention(nn.Module):
 
     def _apply_metric_to_queries(self, q: torch.Tensor) -> torch.Tensor:
         q_base = self._reshape_base_qk(q)
-        if self.generator_type == "diagonal" and self.metric_mode != "unconstrained":
+        if (
+            self.generator_type == "diagonal"
+            and self.metric_mode != "unconstrained"
+            and self.metric_clip_min is None
+            and self.metric_clip_max is None
+        ):
             diagonal = torch.einsum("hm,md->hd", self.theta, self.generators)
             diagonal = self.metric_beta * diagonal
             if self.metric_mode == "residual":

@@ -25,6 +25,8 @@ from lgma.diagnostics import (
     metric_diversity_loss,
     metric_distance_from_identity,
     metric_cosine_similarity,
+    metric_condition_number,
+    metric_singular_values,
     score_cosine_similarity,
 )
 from lgma.attention import LieGeneratedMetricAttention
@@ -80,6 +82,8 @@ def parse_args() -> argparse.Namespace:
         default="exp",
     )
     parser.add_argument("--metric_beta", type=float, default=1.0)
+    parser.add_argument("--metric_clip_min", type=float, default=None)
+    parser.add_argument("--metric_clip_max", type=float, default=None)
     parser.add_argument(
         "--value_beta",
         type=float,
@@ -153,6 +157,18 @@ def parse_args() -> argparse.Namespace:
         help="Weight for off-diagonal induced B_h cosine diversity regularization.",
     )
     parser.add_argument(
+        "--ah_norm_weight",
+        type=float,
+        default=0.0,
+        help="Weight for A_h Frobenius norm regularization.",
+    )
+    parser.add_argument(
+        "--ah_norm_max",
+        type=float,
+        default=0.0,
+        help="If positive, only penalize A_h norms above this radius.",
+    )
+    parser.add_argument(
         "--diagnostic_every",
         type=int,
         default=0,
@@ -211,6 +227,8 @@ def effective_attention_config(module) -> dict[str, object]:
         "generator_type",
         "metric_mode",
         "metric_beta",
+        "metric_clip_min",
+        "metric_clip_max",
         "value_beta",
         "theta_init",
         "logit_scale_mode",
@@ -256,6 +274,25 @@ def compute_diversity_regularizers(
             ]
         ).mean()
     return metric_loss, induced_loss
+
+
+def compute_ah_norm_regularizer(
+    model: TinyTransformerLM,
+    ah_norm_max: float,
+    device: torch.device,
+) -> torch.Tensor:
+    layers = lgma_layers(model)
+    if not layers:
+        return torch.zeros((), device=device)
+    penalties = []
+    for module in layers:
+        ah = module.compute_head_generators()
+        norms = ah.float().reshape(ah.shape[0], -1).norm(dim=-1)
+        if ah_norm_max > 0.0:
+            penalties.append((norms - ah_norm_max).clamp_min(0.0).square().mean())
+        else:
+            penalties.append(norms.square().mean())
+    return torch.stack(penalties).mean().to(device=device)
 
 
 @torch.no_grad()
@@ -346,6 +383,16 @@ def attention_diagnostics(
         identity_distance = metric_distance_from_identity(metrics)
         report["metric_identity_distance_mean"] = float(identity_distance.mean())
         report["metric_identity_distance_max"] = float(identity_distance.max())
+        condition_numbers = metric_condition_number(metrics)
+        report["metric_condition_number_mean"] = float(condition_numbers.mean())
+        report["metric_condition_number_max"] = float(condition_numbers.max())
+        singular_values = metric_singular_values(metrics)
+        report["metric_singular_value_min"] = float(singular_values.min())
+        report["metric_singular_value_max"] = float(singular_values.max())
+        ah = first_attn.compute_head_generators()
+        ah_norms = ah.float().reshape(ah.shape[0], -1).norm(dim=-1)
+        report["ah_fro_norm_mean"] = float(ah_norms.mean())
+        report["ah_fro_norm_max"] = float(ah_norms.max())
         induced_similarity = induced_metric_cosine_similarity(first_attn, metrics)
         report["induced_metric_diversity_mean_cosine"] = float(induced_similarity.mean())
         report["induced_metric_diversity_offdiag_mean_cosine"] = float(
@@ -408,6 +455,18 @@ def evaluate_loss(
 
 def main() -> None:
     args = parse_args()
+    if args.metric_clip_min is not None and args.metric_clip_min < 0:
+        raise SystemExit("--metric_clip_min must be non-negative")
+    if (
+        args.metric_clip_min is not None
+        and args.metric_clip_max is not None
+        and args.metric_clip_min > args.metric_clip_max
+    ):
+        raise SystemExit("--metric_clip_min must be <= --metric_clip_max")
+    if args.ah_norm_weight < 0:
+        raise SystemExit("--ah_norm_weight must be non-negative")
+    if args.ah_norm_max < 0:
+        raise SystemExit("--ah_norm_max must be non-negative")
     torch.manual_seed(0)
     device = torch.device(args.device)
     model = TinyTransformerLM(
@@ -427,6 +486,8 @@ def main() -> None:
         value_dim=args.value_dim,
         metric_mode=args.metric_mode,
         metric_beta=args.metric_beta,
+        metric_clip_min=args.metric_clip_min,
+        metric_clip_max=args.metric_clip_max,
         value_beta=args.value_beta,
         theta_init=args.theta_init,
         logit_scale_mode=args.logit_scale_mode,
@@ -459,6 +520,7 @@ def main() -> None:
     last_loss = None
     last_diversity_loss = 0.0
     last_induced_diversity_loss = 0.0
+    last_ah_norm_loss = 0.0
     last_grad_norms: dict[str, float] = {}
     for step in range(args.steps):
         batch = make_synthetic_batch(
@@ -477,10 +539,12 @@ def main() -> None:
             not args.metric_diversity_on_full_metric,
             device,
         )
+        ah_norm_loss = compute_ah_norm_regularizer(model, args.ah_norm_max, device)
         loss = (
             task_loss
             + args.metric_diversity_weight * diversity_loss
             + args.induced_metric_diversity_weight * induced_diversity_loss
+            + args.ah_norm_weight * ah_norm_loss
         )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -490,6 +554,7 @@ def main() -> None:
         last_loss = float(task_loss.detach().cpu())
         last_diversity_loss = float(diversity_loss.detach().cpu())
         last_induced_diversity_loss = float(induced_diversity_loss.detach().cpu())
+        last_ah_norm_loss = float(ah_norm_loss.detach().cpu())
         should_diagnose = args.diagnostic_every > 0 and (step + 1) % args.diagnostic_every == 0
         if step == 0 or (step + 1) == args.steps or should_diagnose:
             payload = {
@@ -497,6 +562,7 @@ def main() -> None:
                 "loss": last_loss,
                 "metric_diversity_loss": last_diversity_loss,
                 "induced_metric_diversity_loss": last_induced_diversity_loss,
+                "ah_norm_loss": last_ah_norm_loss,
             }
             payload.update(last_grad_norms)
             if should_diagnose:
@@ -526,6 +592,8 @@ def main() -> None:
         "num_base_heads": args.num_base_heads,
         "metric_mode": args.metric_mode,
         "metric_beta": args.metric_beta,
+        "metric_clip_min": args.metric_clip_min,
+        "metric_clip_max": args.metric_clip_max,
         "value_beta": args.value_beta,
         "theta_init": args.theta_init,
         "logit_scale_mode": args.logit_scale_mode,
@@ -533,6 +601,8 @@ def main() -> None:
         "value_transform": args.value_transform,
         "metric_diversity_weight": args.metric_diversity_weight,
         "induced_metric_diversity_weight": args.induced_metric_diversity_weight,
+        "ah_norm_weight": args.ah_norm_weight,
+        "ah_norm_max": args.ah_norm_max,
         "metric_diversity_squared": args.metric_diversity_squared,
         "metric_diversity_on_delta": not args.metric_diversity_on_full_metric,
         "parameters": count_parameters(model),
@@ -552,6 +622,7 @@ def main() -> None:
         ),
         "final_metric_diversity_loss": last_diversity_loss,
         "final_induced_metric_diversity_loss": last_induced_diversity_loss,
+        "final_ah_norm_loss": last_ah_norm_loss,
         "gradient_norms": last_grad_norms,
     }
     if args.task == "multi_relation":
