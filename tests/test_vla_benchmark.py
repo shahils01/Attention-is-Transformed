@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.train_vla import save_checkpoint
+from experiments.train_vla import load_checkpoint, save_checkpoint
 from lgma.vla_data import XVLAMetaDataset
 from lgma.vla_model import VLAPolicyConfig, VLATransformerPolicy, ee6d_loss
 
@@ -256,3 +256,66 @@ def test_vla_train_smoke_two_steps(tmp_path: Path):
     assert steps == 2
     save_checkpoint(model, optimizer, config, output_dir, steps)
     assert (output_dir / "checkpoint_step_2" / "checkpoint.pt").exists()
+
+
+def test_vla_checkpoint_resume_restores_model_and_optimizer(tmp_path: Path):
+    config = _config("mha")
+    model = VLATransformerPolicy(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    batch = {
+        "image_input": torch.randn(2, 2, 3, 16, 16),
+        "image_mask": torch.ones(2, 2, dtype=torch.bool),
+        "text_token_ids": torch.randint(0, 128, (2, 8)),
+        "proprio": torch.randn(2, 20),
+        "action": torch.randn(2, 3, 20),
+    }
+    loss = sum(
+        ee6d_loss(
+            model(
+                image_input=batch["image_input"],
+                image_mask=batch["image_mask"],
+                text_token_ids=batch["text_token_ids"],
+                proprio=batch["proprio"],
+            ),
+            batch["action"],
+        ).values()
+    )
+    loss.backward()
+    optimizer.step()
+    save_checkpoint(model, optimizer, config, tmp_path, step=7)
+
+    resumed = VLATransformerPolicy(config)
+    resumed_optimizer = torch.optim.AdamW(resumed.parameters(), lr=1e-3)
+    step = load_checkpoint(
+        tmp_path / "checkpoint_step_7",
+        resumed,
+        resumed_optimizer,
+        scaler=None,
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    assert step == 7
+    for original, loaded in zip(model.parameters(), resumed.parameters()):
+        assert torch.allclose(original, loaded)
+    assert resumed_optimizer.state_dict()["state"]
+
+
+def test_vla_checkpoint_resume_rejects_config_mismatch(tmp_path: Path):
+    config = _config("mha")
+    model = VLATransformerPolicy(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    save_checkpoint(model, optimizer, config, tmp_path, step=3)
+
+    mismatched = _config("mha")
+    mismatched.dropout = 0.2
+    mismatched_model = VLATransformerPolicy(mismatched)
+    with pytest.raises(ValueError, match="config does not match"):
+        load_checkpoint(
+            tmp_path / "checkpoint_step_3" / "checkpoint.pt",
+            mismatched_model,
+            torch.optim.AdamW(mismatched_model.parameters(), lr=1e-3),
+            scaler=None,
+            config=mismatched,
+            device=torch.device("cpu"),
+        )

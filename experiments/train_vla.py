@@ -59,6 +59,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train_metas_path", required=True)
     parser.add_argument("--val_metas_path", default=None)
     parser.add_argument("--output_dir", type=Path, default=Path("outputs/vla"))
+    parser.add_argument(
+        "--resume_checkpoint",
+        type=Path,
+        default=None,
+        help="Resume from a checkpoint.pt file or checkpoint_step_* directory.",
+    )
     parser.add_argument("--attention", choices=ATTENTION_CHOICES, default="mha")
     parser.add_argument("--num_base_heads", type=int, default=1)
     parser.add_argument("--num_generators", type=int, default=4)
@@ -326,6 +332,7 @@ def save_checkpoint(
     config: VLAPolicyConfig,
     output_dir: Path,
     step: int,
+    scaler: torch.cuda.amp.GradScaler | None = None,
 ) -> None:
     ckpt_dir = output_dir / f"checkpoint_step_{step}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -333,6 +340,7 @@ def save_checkpoint(
         {
             "model": unwrap_model(model).state_dict(),
             "optimizer": optimizer.state_dict(),
+            "scaler": scaler.state_dict() if scaler is not None and scaler.is_enabled() else None,
             "config": config.to_dict(),
             "step": step,
         },
@@ -340,6 +348,53 @@ def save_checkpoint(
     )
     with (ckpt_dir / "config.json").open("w", encoding="utf-8") as handle:
         json.dump(config.to_dict(), handle, indent=2)
+
+
+def resolve_checkpoint_path(path: Path) -> Path:
+    checkpoint_path = path / "checkpoint.pt" if path.is_dir() else path
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"resume checkpoint does not exist: {checkpoint_path}")
+    return checkpoint_path
+
+
+def _config_mismatch_message(
+    checkpoint_config: VLAPolicyConfig,
+    current_config: VLAPolicyConfig,
+) -> str | None:
+    checkpoint_dict = checkpoint_config.to_dict()
+    current_dict = current_config.to_dict()
+    diffs = []
+    for key in sorted(set(checkpoint_dict) | set(current_dict)):
+        if checkpoint_dict.get(key) != current_dict.get(key):
+            diffs.append(f"{key}: checkpoint={checkpoint_dict.get(key)!r}, current={current_dict.get(key)!r}")
+    if not diffs:
+        return None
+    preview = "; ".join(diffs[:8])
+    suffix = "" if len(diffs) <= 8 else f"; ... {len(diffs) - 8} more"
+    return f"resume checkpoint config does not match current args ({preview}{suffix})"
+
+
+def load_checkpoint(
+    path: Path,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.cuda.amp.GradScaler | None,
+    config: VLAPolicyConfig,
+    device: torch.device,
+) -> int:
+    checkpoint_path = resolve_checkpoint_path(path)
+    payload = torch.load(checkpoint_path, map_location=device)
+    checkpoint_config = VLAPolicyConfig(**payload["config"])
+    mismatch = _config_mismatch_message(checkpoint_config, config)
+    if mismatch is not None:
+        raise ValueError(mismatch)
+    unwrap_model(model).load_state_dict(payload["model"])
+    optimizer.load_state_dict(payload["optimizer"])
+    if scaler is not None and payload.get("scaler") is not None:
+        scaler.load_state_dict(payload["scaler"])
+    step = int(payload.get("step", 0))
+    print(json.dumps({"event": "checkpoint_loaded", "step": step, "path": str(checkpoint_path)}))
+    return step
 
 
 def main() -> None:
@@ -418,6 +473,12 @@ def main() -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda" and args.precision == "fp16")
 
+    step = 0
+    if args.resume_checkpoint is not None:
+        step = load_checkpoint(args.resume_checkpoint, model, optimizer, scaler, config, device)
+    if distributed:
+        dist.barrier()
+
     raw_model = unwrap_model(model)
     wandb_run = None
     if is_main_process(rank):
@@ -448,13 +509,13 @@ def main() -> None:
                 "validation_samples": len(val_dataset) if val_dataset is not None else 0,
                 "distributed": distributed,
                 "world_size": world_size,
+                "resume_step": step,
             },
         )
 
     log_path = args.output_dir / "metrics.jsonl"
     model.train()
-    step = 0
-    epoch = 0
+    epoch = step // max(len(train_loader), 1)
     start = time.time()
     try:
         while step < args.steps:
@@ -505,13 +566,13 @@ def main() -> None:
                         log_wandb(wandb_run, logs, step=step)
 
                 if is_main_process(rank) and args.save_every > 0 and step % args.save_every == 0:
-                    save_checkpoint(model, optimizer, config, args.output_dir, step)
+                    save_checkpoint(model, optimizer, config, args.output_dir, step, scaler)
 
                 if step >= args.steps:
                     break
 
         if is_main_process(rank):
-            save_checkpoint(model, optimizer, config, args.output_dir, step)
+            save_checkpoint(model, optimizer, config, args.output_dir, step, scaler)
             log_wandb(wandb_run, {"final_step": step}, step=step)
     finally:
         if is_main_process(rank):

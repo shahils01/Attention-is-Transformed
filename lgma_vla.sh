@@ -9,6 +9,7 @@ WANDB_GROUP="${WANDB_GROUP:-libero}"
 WANDB_TAGS="${WANDB_TAGS:-libero,vla,lgma_residual,multibase,b2}"
 WANDB_MODE="${WANDB_MODE:-online}"
 VALUE_TRANSFORM="${VALUE_TRANSFORM:-none}"
+RESUME_CHECKPOINT="${RESUME_CHECKPOINT:-}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 if (( NPROC_PER_NODE > 1 )); then
   DEVICE="${DEVICE:-cuda}"
@@ -16,6 +17,10 @@ if (( NPROC_PER_NODE > 1 )); then
 else
   DEVICE="${DEVICE:-cuda:0}"
   LAUNCHER=(python experiments/train_vla.py)
+fi
+EXTRA_ARGS=()
+if [[ -n "${RESUME_CHECKPOINT}" ]]; then
+  EXTRA_ARGS+=(--resume_checkpoint "${RESUME_CHECKPOINT}")
 fi
 
 "${LAUNCHER[@]}" \
@@ -53,4 +58,5 @@ fi
   --dropout 0.1 \
   --lr 3e-4 \
   --weight_decay 0.01 \
-  --precision bf16
+  --precision bf16 \
+  "${EXTRA_ARGS[@]}"
