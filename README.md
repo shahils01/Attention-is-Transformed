@@ -215,3 +215,30 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
 For Slurm multi-GPU jobs, use the same script under `srun` or `torchrun`
 according to the Palmetto job template. Disable auto-DDP with `--no_ddp` for
 single-process debugging.
+
+### Fair TinyStories Runtime Comparisons
+
+The TinyStories runner logs normalized efficiency coordinates for reviewer-safe
+comparisons across different GPU counts and batch sizes:
+
+- `tokens_seen`
+- `tokens_per_step`
+- `effective_global_batch`
+- `tokens_per_second_per_gpu`
+- `elapsed_training_seconds`
+- `gpu_hours`
+- `peak_memory_gib`
+
+Summarize multiple run directories with:
+
+```bash
+python experiments/summarize_tinystories_runs.py \
+  /path/to/tinystories_mha_ddp4 \
+  /path/to/tinystories_lgma_ddp8 \
+  --csv /path/to/summary.csv \
+  --markdown /path/to/summary.md \
+  --plot_dir /path/to/plots
+```
+
+Use the generated validation-loss-vs-tokens and validation-loss-vs-GPU-hours
+plots for paper figures instead of step-only W&B screenshots.

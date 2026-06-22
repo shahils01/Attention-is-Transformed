@@ -841,9 +841,11 @@ def main() -> None:
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
 
-        last_log_time = time.perf_counter()
+        training_start_time = time.perf_counter()
+        last_log_time = training_start_time
         last_log_step = start_step
         tokens_per_step = args.batch_size * seq_len * args.grad_accum_steps * world_size
+        effective_global_batch = args.batch_size * args.grad_accum_steps * world_size
 
         for step_idx in range(start_step, args.steps):
             step = step_idx + 1
@@ -924,8 +926,11 @@ def main() -> None:
             if (should_log or should_eval or should_diagnose or is_final) and main_process:
                 now = time.perf_counter()
                 elapsed = max(now - last_log_time, 1e-12)
+                elapsed_training_seconds = now - training_start_time
                 steps_since_log = max(step - last_log_step, 1)
                 tokens_per_second = tokens_per_step * steps_since_log / elapsed
+                tokens_seen = step * tokens_per_step
+                elapsed_training_hours = elapsed_training_seconds / 3600.0
                 payload: dict[str, object] = {
                     "step": step,
                     "loss": last_loss,
@@ -933,14 +938,23 @@ def main() -> None:
                     "metric_diversity_loss": last_diversity_loss,
                     "induced_metric_diversity_loss": last_induced_diversity_loss,
                     "ah_norm_loss": last_ah_norm_loss,
+                    "tokens_seen": tokens_seen,
+                    "tokens_per_step": tokens_per_step,
                     "tokens_per_second": tokens_per_second,
+                    "tokens_per_second_per_gpu": tokens_per_second / max(world_size, 1),
+                    "effective_global_batch": effective_global_batch,
+                    "elapsed_training_seconds": elapsed_training_seconds,
+                    "elapsed_training_hours": elapsed_training_hours,
+                    "gpu_hours": elapsed_training_hours * world_size,
                     "lr": optimizer.param_groups[0]["lr"],
                     "rank": rank,
                     "world_size": world_size,
                 }
                 payload.update(last_grad_norms)
                 if device.type == "cuda":
-                    payload["peak_memory_bytes"] = torch.cuda.max_memory_allocated(device)
+                    peak_memory = torch.cuda.max_memory_allocated(device)
+                    payload["peak_memory_bytes"] = peak_memory
+                    payload["peak_memory_gib"] = peak_memory / float(1024**3)
                 if should_eval or is_final:
                     validation_loss = evaluate_text_loss(
                         unwrap_model(model),
@@ -1004,8 +1018,17 @@ def main() -> None:
             )
             report["distributed"] = ddp_enabled
             report["world_size"] = world_size
+            report["tokens_per_step"] = tokens_per_step
+            report["tokens_seen"] = args.steps * tokens_per_step
+            report["effective_global_batch"] = effective_global_batch
+            elapsed_training_seconds = time.perf_counter() - training_start_time
+            report["elapsed_training_seconds"] = elapsed_training_seconds
+            report["elapsed_training_hours"] = elapsed_training_seconds / 3600.0
+            report["gpu_hours"] = report["elapsed_training_hours"] * world_size
             if device.type == "cuda":
-                report["peak_memory_bytes"] = torch.cuda.max_memory_allocated(device)
+                peak_memory = torch.cuda.max_memory_allocated(device)
+                report["peak_memory_bytes"] = peak_memory
+                report["peak_memory_gib"] = peak_memory / float(1024**3)
             if output_dir is not None:
                 final_report_path = output_dir / "final_report.json"
                 final_report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")

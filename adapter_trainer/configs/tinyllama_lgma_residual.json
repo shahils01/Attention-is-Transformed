@@ -1,0 +1,17 @@
+{
+  "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+  "stage": "stage1",
+  "layers": "all",
+  "attention_variant": "lgma_residual",
+  "generator_type": "full",
+  "num_generators": 4,
+  "qk_num_base_heads": 4,
+  "value_num_base_heads": 4,
+  "sequence_length": 512,
+  "batch_size": 1,
+  "steps_per_layer": 500,
+  "lr": 0.0002,
+  "weight_decay": 0.01,
+  "cosine_weight": 0.1,
+  "precision": "bf16"
+}
