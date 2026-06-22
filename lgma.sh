@@ -8,7 +8,7 @@ python experiments/train_tinystories.py \
   --log_every 100 \
   --eval_every 1000 \
   --save_every 5000 \
-  --output_dir /scratch/shahils/lgma_runs/large_tinystories_lgma_unconstrained_multibase_b4_h16 \
+  --output_dir /scratch/shahils/lgma_runs/large_tinystories_lgma_residual_multibase_ValueLie_b4_h16_beta025_stabilized \
   --diagnostic_every 1000 \
   --diagnostic_batches 2 \
   --wandb_project lgma \
@@ -24,10 +24,11 @@ python experiments/train_tinystories.py \
   --value_dim 64 \
   --num_generators 16 \
   --metric_beta 0.25 \
+  --value_beta 0.25 \
   --metric_clip_min 0.25 \
   --metric_clip_max 4.0 \
-  --ah_norm_weight 1e-4 \
-  --ah_norm_max 2.0 \
+  --ah_norm_weight 1e-3 \
+  --ah_norm_max 0.0 \
   --context_length 1024 \
   --dropout 0.1 \
   --lr 3e-4 \
