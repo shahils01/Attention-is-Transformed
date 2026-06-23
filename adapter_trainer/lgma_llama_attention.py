@@ -51,9 +51,17 @@ def variant_settings(attention_variant: str) -> dict[str, Any]:
             "theta_init": "circle",
             "value_transform": "none",
         }
-    if attention_variant in {"lgma_residual", "lgma_multibase"}:
+    if attention_variant == "lgma_residual":
         return {
             "metric_mode": "residual",
+            "logit_scale_mode": "rms_metric",
+            "learn_head_temperature": True,
+            "theta_init": "circle",
+            "value_transform": "none",
+        }
+    if attention_variant == "lgma_multibase":
+        return {
+            "metric_mode": "exp",
             "logit_scale_mode": "rms_metric",
             "learn_head_temperature": True,
             "theta_init": "circle",
@@ -358,11 +366,7 @@ class LlamaLgmaAttention(nn.Module):
                 head_generators,
                 head_generators,
             )
-        metrics = torch.stack(
-            [torch.linalg.matrix_exp(generator.float()) for generator in head_generators],
-            dim=0,
-        )
-        return metrics.to(dtype=head_generators.dtype)
+        return torch.linalg.matrix_exp(head_generators.float()).to(dtype=head_generators.dtype)
 
     def _reshape_qk_base(self, tensor: torch.Tensor) -> torch.Tensor:
         batch, seq_len, _ = tensor.shape
@@ -372,8 +376,16 @@ class LlamaLgmaAttention(nn.Module):
         batch, seq_len, _ = tensor.shape
         return tensor.view(batch, seq_len, self.value_num_base_heads, self.head_dim).transpose(1, 2)
 
-    def _apply_metric_to_queries(self, q_base: torch.Tensor) -> torch.Tensor:
-        if self.generator_type == "diagonal" and self.metric_mode != "unconstrained":
+    def _apply_metric_to_queries(
+        self,
+        q_base: torch.Tensor,
+        metrics: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if (
+            metrics is None
+            and self.generator_type == "diagonal"
+            and self.metric_mode != "unconstrained"
+        ):
             diagonal = torch.einsum("hm,md->hd", self.theta, self.generators)
             if self.metric_mode == "residual":
                 scale = 1.0 + diagonal
@@ -384,13 +396,15 @@ class LlamaLgmaAttention(nn.Module):
             scale = scale.view(self.qk_num_base_heads, self.qk_generated_heads_per_base, self.head_dim)
             q_metric = q_base[:, :, None, :, :] * scale[None, :, :, None, :]
         else:
-            metrics = self.compute_metrics().view(
+            if metrics is None:
+                metrics = self.compute_metrics()
+            metrics_by_base = metrics.view(
                 self.qk_num_base_heads,
                 self.qk_generated_heads_per_base,
                 self.head_dim,
                 self.head_dim,
             )
-            q_metric = torch.einsum("nbtd,bkde->nbkte", q_base, metrics)
+            q_metric = torch.einsum("nbtd,bkde->nbkte", q_base, metrics_by_base)
         batch, _, _, seq_len, _ = q_metric.shape
         return q_metric.reshape(batch, self.num_heads, seq_len, self.head_dim)
 
@@ -425,12 +439,18 @@ class LlamaLgmaAttention(nn.Module):
             values = values * self.value_scale[None, :, None, :]
         return values
 
-    def _score_scale(self, dtype: torch.dtype, device: torch.device) -> torch.Tensor | float:
+    def _score_scale(
+        self,
+        dtype: torch.dtype,
+        device: torch.device,
+        metrics: torch.Tensor | None = None,
+    ) -> torch.Tensor | float:
         if self.logit_scale_mode == "sqrt_dim" and not hasattr(self, "head_logit_scale"):
             return math.sqrt(self.head_dim)
         denom = torch.full((self.num_heads,), math.sqrt(self.head_dim), dtype=dtype, device=device)
         if self.logit_scale_mode == "rms_metric":
-            metrics = self.compute_metrics()
+            if metrics is None:
+                metrics = self.compute_metrics()
             rms = metrics.float().pow(2).sum(dim=(-1, -2)).div(self.head_dim).sqrt()
             denom = denom * rms.to(device=device, dtype=dtype).clamp_min(1e-6)
         if hasattr(self, "head_logit_scale"):
@@ -494,12 +514,13 @@ class LlamaLgmaAttention(nn.Module):
             sin = sin[:, None, :, :] if sin.ndim == 3 else sin
         q_base, k_base = apply_rotary_pos_emb(q_base, k_base, cos, sin)
 
-        q_metric = self._apply_metric_to_queries(q_base)
+        metrics = self.compute_metrics() if self.logit_scale_mode == "rms_metric" else None
+        q_metric = self._apply_metric_to_queries(q_base, metrics=metrics)
         k_heads = self._expand_keys(k_base)
         v_heads = self._expand_values(v_base)
 
         scores = torch.einsum("bhtd,bhsd->bhts", q_metric, k_heads)
-        scale = self._score_scale(scores.dtype, scores.device)
+        scale = self._score_scale(scores.dtype, scores.device, metrics=metrics)
         if isinstance(scale, torch.Tensor):
             scores = scores / scale[None, :, None, None]
         else:

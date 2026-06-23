@@ -174,6 +174,52 @@ def test_quadratic_metric_mode_returns_second_order_expansion():
     assert torch.allclose(layer.compute_metrics(), expected, atol=1e-6)
 
 
+def test_exp_metric_mode_matches_batched_matrix_exp():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=3,
+        head_dim=4,
+        num_generators=2,
+        metric_mode="exp",
+        stabilize_generators=False,
+        use_sdpa=False,
+    )
+    head_generators = layer.compute_head_generators()
+    expected = torch.linalg.matrix_exp(head_generators.float()).to(dtype=head_generators.dtype)
+    assert torch.allclose(layer.compute_metrics(), expected, atol=1e-6)
+
+
+def test_quadratic_metric_is_closer_to_exp_than_residual_for_small_generators():
+    torch.manual_seed(0)
+    residual = LieGeneratedMetricAttention(
+        16,
+        num_heads=3,
+        head_dim=4,
+        num_generators=2,
+        metric_mode="residual",
+        metric_beta=0.5,
+        stabilize_generators=False,
+        use_sdpa=False,
+    )
+    quadratic = LieGeneratedMetricAttention(
+        16,
+        num_heads=3,
+        head_dim=4,
+        num_generators=2,
+        metric_mode="quadratic",
+        metric_beta=0.5,
+        stabilize_generators=False,
+        use_sdpa=False,
+    )
+    quadratic.load_state_dict(residual.state_dict())
+
+    exact = torch.linalg.matrix_exp(residual.compute_head_generators().float())
+    residual_error = (residual.compute_metrics().float() - exact).norm()
+    quadratic_error = (quadratic.compute_metrics().float() - exact).norm()
+    assert quadratic_error < residual_error
+
+
 def test_unconstrained_metric_mode_learns_dense_per_head_metrics():
     torch.manual_seed(0)
     layer = LieGeneratedMetricAttention(
@@ -203,6 +249,31 @@ def test_rms_metric_scaling_preserves_identity_scale():
     layer.theta.data.zero_()
     scale = layer._score_scale()
     assert torch.allclose(scale, torch.full_like(scale, 2.0), atol=1e-6)
+
+
+def test_rms_metric_forward_reuses_computed_metrics():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        num_generators=2,
+        metric_mode="exp",
+        logit_scale_mode="rms_metric",
+        use_sdpa=False,
+    )
+    original_compute_metrics = layer.compute_metrics
+    calls = 0
+
+    def counted_compute_metrics():
+        nonlocal calls
+        calls += 1
+        return original_compute_metrics()
+
+    layer.compute_metrics = counted_compute_metrics
+    x = torch.randn(2, 5, 16)
+    layer(x)
+    assert calls == 1
 
 
 def test_diagonal_value_transform_changes_values_not_attention_weights():

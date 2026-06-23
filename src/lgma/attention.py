@@ -315,11 +315,7 @@ class LieGeneratedMetricAttention(nn.Module):
             second_order = torch.matmul(head_generators, head_generators)
             metrics = eye[None, :, :] + head_generators + 0.5 * second_order
             return self._clip_metric_singular_values(metrics)
-        metrics = torch.stack(
-            [torch.linalg.matrix_exp(generator.float()) for generator in head_generators],
-            dim=0,
-        )
-        metrics = metrics.to(dtype=head_generators.dtype)
+        metrics = torch.linalg.matrix_exp(head_generators.float()).to(dtype=head_generators.dtype)
         return self._clip_metric_singular_values(metrics)
 
     def effective_generators(self) -> torch.Tensor:
@@ -376,11 +372,7 @@ class LieGeneratedMetricAttention(nn.Module):
             )
             second_order = torch.matmul(head_generators, head_generators)
             return eye[None, :, :] + head_generators + 0.5 * second_order
-        transforms = torch.stack(
-            [torch.linalg.matrix_exp(generator.float()) for generator in head_generators],
-            dim=0,
-        )
-        return transforms.to(dtype=head_generators.dtype)
+        return torch.linalg.matrix_exp(head_generators.float()).to(dtype=head_generators.dtype)
 
     def _project(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.q_proj(x), self.k_proj(x), self.v_proj(x)
@@ -393,18 +385,25 @@ class LieGeneratedMetricAttention(nn.Module):
         batch, seq_len, _ = tensor.shape
         return tensor.view(batch, seq_len, self.num_base_heads, self.value_dim).transpose(1, 2)
 
-    def _metrics_by_base(self) -> torch.Tensor:
-        return self.compute_metrics().view(
+    def _metrics_by_base(self, metrics: torch.Tensor | None = None) -> torch.Tensor:
+        if metrics is None:
+            metrics = self.compute_metrics()
+        return metrics.view(
             self.num_base_heads,
             self.generated_heads_per_base,
             self.base_dim,
             self.base_dim,
         )
 
-    def _apply_metric_to_queries(self, q: torch.Tensor) -> torch.Tensor:
+    def _apply_metric_to_queries(
+        self,
+        q: torch.Tensor,
+        metrics: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         q_base = self._reshape_base_qk(q)
         if (
-            self.generator_type == "diagonal"
+            metrics is None
+            and self.generator_type == "diagonal"
             and self.metric_mode != "unconstrained"
             and self.metric_clip_min is None
             and self.metric_clip_max is None
@@ -424,12 +423,12 @@ class LieGeneratedMetricAttention(nn.Module):
             )
             q_metric = q_base[:, :, None, :, :] * scale[None, :, :, None, :]
         else:
-            metrics = self._metrics_by_base()
-            q_metric = torch.einsum("nbtd,bkde->nbkte", q_base, metrics)
+            metrics_by_base = self._metrics_by_base(metrics)
+            q_metric = torch.einsum("nbtd,bkde->nbkte", q_base, metrics_by_base)
         batch, _, _, seq_len, _ = q_metric.shape
         return q_metric.reshape(batch, self.num_heads, seq_len, self.base_dim)
 
-    def _score_scale(self) -> torch.Tensor | float:
+    def _score_scale(self, metrics: torch.Tensor | None = None) -> torch.Tensor | float:
         if self.logit_scale_mode == "sqrt_dim" and not hasattr(self, "head_logit_scale"):
             return math.sqrt(self.base_dim)
 
@@ -437,7 +436,8 @@ class LieGeneratedMetricAttention(nn.Module):
         dtype = self.q_proj.weight.dtype
         denom = torch.full((self.num_heads,), math.sqrt(self.base_dim), device=device, dtype=dtype)
         if self.logit_scale_mode == "rms_metric":
-            metrics = self.compute_metrics()
+            if metrics is None:
+                metrics = self.compute_metrics()
             rms = metrics.float().pow(2).sum(dim=(-1, -2)).div(self.base_dim).sqrt()
             denom = denom * rms.to(device=device, dtype=dtype).clamp_min(1e-6)
         if hasattr(self, "head_logit_scale"):
@@ -450,12 +450,17 @@ class LieGeneratedMetricAttention(nn.Module):
         k: torch.Tensor,
         apply_scale: bool = True,
     ) -> torch.Tensor:
-        q_metric = self._apply_metric_to_queries(q)
+        metrics = (
+            self.compute_metrics()
+            if apply_scale and self.logit_scale_mode == "rms_metric"
+            else None
+        )
+        q_metric = self._apply_metric_to_queries(q, metrics=metrics)
         k_heads = self._expand_keys(k)
         scores = torch.einsum("bhtd,bhsd->bhts", q_metric, k_heads)
         if not apply_scale:
             return scores
-        scale = self._score_scale()
+        scale = self._score_scale(metrics=metrics)
         if isinstance(scale, torch.Tensor):
             return scores / scale[None, :, None, None].to(device=scores.device, dtype=scores.dtype)
         return scores / scale
@@ -586,8 +591,9 @@ class LieGeneratedMetricAttention(nn.Module):
         key_padding_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         batch, seq_len, _ = q.shape
-        q_metric = self._apply_metric_to_queries(q)
-        scale = self._score_scale()
+        metrics = self.compute_metrics() if self.logit_scale_mode == "rms_metric" else None
+        q_metric = self._apply_metric_to_queries(q, metrics=metrics)
+        scale = self._score_scale(metrics=metrics)
         if isinstance(scale, torch.Tensor):
             q_metric = q_metric / scale[None, :, None, None].to(
                 device=q_metric.device, dtype=q_metric.dtype
