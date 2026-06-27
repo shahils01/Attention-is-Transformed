@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 
 from experiments.train_vla import load_checkpoint, save_checkpoint
 from lgma.vla_data import XVLAMetaDataset
-from lgma.vla_model import VLAPolicyConfig, VLATransformerPolicy, ee6d_loss
+from lgma.vla_model import VLAPolicyConfig, VLATransformerPolicy, ee6d_continuous_loss, ee6d_loss
 
 
 def _write_libero_fixture(root: Path, length: int = 8) -> Path:
@@ -184,6 +184,57 @@ def test_vla_forward_backward_for_value_lie_variants(attention: str, value_trans
     )
 
 
+def test_vla_flow_action_head_forward_backward():
+    torch.manual_seed(0)
+    config = _config("mha")
+    config.action_head = "flow"
+    config.flow_sampling_steps = 2
+    model = VLATransformerPolicy(config)
+    batch = {
+        "image_input": torch.randn(2, 2, 3, 16, 16),
+        "image_mask": torch.ones(2, 2, dtype=torch.bool),
+        "text_token_ids": torch.randint(0, 128, (2, 8)),
+        "proprio": torch.randn(2, 20),
+        "action": torch.randn(2, 3, 20),
+    }
+    timestep = torch.rand(2)
+    noise = torch.randn_like(batch["action"])
+    mix = timestep.view(-1, 1, 1)
+    noisy_action = (1.0 - mix) * noise + mix * batch["action"]
+    target_velocity = batch["action"] - noise
+    pred_velocity = model(
+        image_input=batch["image_input"],
+        image_mask=batch["image_mask"],
+        text_token_ids=batch["text_token_ids"],
+        proprio=batch["proprio"],
+        noisy_action=noisy_action,
+        flow_timestep=timestep,
+    )
+    assert pred_velocity.shape == (2, 3, 20)
+    loss = sum(ee6d_continuous_loss(pred_velocity, target_velocity).values())
+    loss.backward()
+    assert all(
+        param.grad is None or torch.isfinite(param.grad).all()
+        for param in model.parameters()
+    )
+
+
+def test_vla_flow_action_head_samples_actions():
+    torch.manual_seed(0)
+    config = _config("mha")
+    config.action_head = "flow"
+    config.flow_sampling_steps = 2
+    model = VLATransformerPolicy(config)
+    pred = model(
+        image_input=torch.randn(2, 2, 3, 16, 16),
+        image_mask=torch.ones(2, 2, dtype=torch.bool),
+        text_token_ids=torch.randint(0, 128, (2, 8)),
+        proprio=torch.randn(2, 20),
+    )
+    assert pred.shape == (2, 3, 20)
+    assert torch.isfinite(pred).all()
+
+
 def test_invalid_multibase_head_count_raises():
     cfg = _config("lgma_residual", num_base_heads=3)
     with pytest.raises(ValueError, match="divisible"):
@@ -319,3 +370,29 @@ def test_vla_checkpoint_resume_rejects_config_mismatch(tmp_path: Path):
             config=mismatched,
             device=torch.device("cpu"),
         )
+
+
+def test_vla_checkpoint_resume_can_reset_action_head(tmp_path: Path):
+    config = _config("mha")
+    model = VLATransformerPolicy(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    save_checkpoint(model, optimizer, config, tmp_path, step=5)
+
+    flow_config = _config("mha")
+    flow_config.action_head = "flow"
+    flow_config.flow_sampling_steps = 2
+    flow_model = VLATransformerPolicy(flow_config)
+    flow_optimizer = torch.optim.AdamW(flow_model.parameters(), lr=1e-3)
+    step = load_checkpoint(
+        tmp_path / "checkpoint_step_5",
+        flow_model,
+        flow_optimizer,
+        scaler=None,
+        config=flow_config,
+        device=torch.device("cpu"),
+        reset_action_head=True,
+    )
+
+    assert step == 5
+    assert not flow_optimizer.state_dict()["state"]
+    assert torch.allclose(model.text_embedding.weight, flow_model.text_embedding.weight)

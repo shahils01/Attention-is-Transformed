@@ -203,7 +203,10 @@ class VLAActionPlanner:
             "proprio": torch.from_numpy(np.asarray(proprio, dtype=np.float32)).unsqueeze(0).to(self.device),
         }
         pred = self.model(**batch).squeeze(0).float().cpu().numpy()
-        pred[:, [9, 19]] = 1.0 / (1.0 + np.exp(-pred[:, [9, 19]]))
+        if self.config.action_head == "flow":
+            pred[:, [9, 19]] = np.clip(pred[:, [9, 19]], 0.0, 1.0)
+        else:
+            pred[:, [9, 19]] = 1.0 / (1.0 + np.exp(-pred[:, [9, 19]]))
         return pred
 
     def next_action_plan(

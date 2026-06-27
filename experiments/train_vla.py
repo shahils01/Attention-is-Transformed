@@ -28,7 +28,7 @@ from lgma.diagnostics import (
 )
 from lgma.tracking import finish_wandb, init_wandb_run, log_wandb
 from lgma.vla_data import XVLAMetaDataset
-from lgma.vla_model import VLAPolicyConfig, VLATransformerPolicy, ee6d_loss
+from lgma.vla_model import VLAPolicyConfig, VLATransformerPolicy, ee6d_continuous_loss, ee6d_loss
 
 
 ATTENTION_CHOICES = (
@@ -52,6 +52,13 @@ VALUE_TRANSFORMS = (
     "lie_quadratic",
     "unconstrained",
 )
+ACTION_HEADS = ("mlp", "flow")
+ACTION_HEAD_CONFIG_KEYS = {
+    "action_head",
+    "flow_hidden_mult",
+    "flow_sampling_steps",
+    "flow_noise_scale",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,6 +99,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--head_dim", type=int, default=32)
     parser.add_argument("--mlp_ratio", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--action_head", choices=ACTION_HEADS, default="mlp")
+    parser.add_argument(
+        "--flow_hidden_mult",
+        type=int,
+        default=2,
+        help="Hidden width multiplier for --action_head flow.",
+    )
+    parser.add_argument(
+        "--flow_sampling_steps",
+        type=int,
+        default=10,
+        help="Euler integration steps used when sampling a flow action head.",
+    )
+    parser.add_argument(
+        "--flow_noise_scale",
+        type=float,
+        default=1.0,
+        help="Gaussian prior scale for flow matching.",
+    )
 
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=4)
@@ -129,6 +155,14 @@ def parse_args() -> argparse.Namespace:
         "--no_ddp",
         action="store_true",
         help="Disable torchrun/DDP setup even when WORLD_SIZE > 1.",
+    )
+    parser.add_argument(
+        "--reset_action_head_on_resume",
+        action="store_true",
+        help=(
+            "Load compatible checkpoint weights except action_head.*, keep the checkpoint step, "
+            "and start with a fresh optimizer. Use when changing the action head."
+        ),
     )
     return parser.parse_args()
 
@@ -202,6 +236,10 @@ def make_config(args: argparse.Namespace) -> VLAPolicyConfig:
         value_dim=args.value_dim,
         value_beta=args.value_beta,
         value_transform=args.value_transform,
+        action_head=args.action_head,
+        flow_hidden_mult=args.flow_hidden_mult,
+        flow_sampling_steps=args.flow_sampling_steps,
+        flow_noise_scale=args.flow_noise_scale,
     )
 
 
@@ -257,13 +295,31 @@ def loss_from_batch(
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     batch = move_batch(batch, device)
     with autocast_context(device, precision):
-        pred = model(
-            image_input=batch["image_input"],
-            image_mask=batch["image_mask"],
-            text_token_ids=batch["text_token_ids"],
-            proprio=batch["proprio"],
-        )
-        loss_dict = ee6d_loss(pred, batch["action"])
+        raw_model = unwrap_model(model)
+        if raw_model.config.action_head == "flow":
+            target = batch["action"]
+            timestep = torch.rand(target.shape[0], device=device, dtype=target.dtype)
+            noise = torch.randn_like(target) * raw_model.config.flow_noise_scale
+            mix = timestep.view(-1, 1, 1)
+            noisy_action = (1.0 - mix) * noise + mix * target
+            target_velocity = target - noise
+            pred = model(
+                image_input=batch["image_input"],
+                image_mask=batch["image_mask"],
+                text_token_ids=batch["text_token_ids"],
+                proprio=batch["proprio"],
+                noisy_action=noisy_action,
+                flow_timestep=timestep,
+            )
+            loss_dict = ee6d_continuous_loss(pred, target_velocity)
+        else:
+            pred = model(
+                image_input=batch["image_input"],
+                image_mask=batch["image_mask"],
+                text_token_ids=batch["text_token_ids"],
+                proprio=batch["proprio"],
+            )
+            loss_dict = ee6d_loss(pred, batch["action"])
         loss = sum(loss_dict.values())
     return loss, loss_dict
 
@@ -360,11 +416,14 @@ def resolve_checkpoint_path(path: Path) -> Path:
 def _config_mismatch_message(
     checkpoint_config: VLAPolicyConfig,
     current_config: VLAPolicyConfig,
+    allowed_keys: set[str] | None = None,
 ) -> str | None:
     checkpoint_dict = checkpoint_config.to_dict()
     current_dict = current_config.to_dict()
     diffs = []
     for key in sorted(set(checkpoint_dict) | set(current_dict)):
+        if allowed_keys is not None and key in allowed_keys:
+            continue
         if checkpoint_dict.get(key) != current_dict.get(key):
             diffs.append(f"{key}: checkpoint={checkpoint_dict.get(key)!r}, current={current_dict.get(key)!r}")
     if not diffs:
@@ -381,16 +440,45 @@ def load_checkpoint(
     scaler: torch.cuda.amp.GradScaler | None,
     config: VLAPolicyConfig,
     device: torch.device,
+    reset_action_head: bool = False,
 ) -> int:
     checkpoint_path = resolve_checkpoint_path(path)
     payload = torch.load(checkpoint_path, map_location=device)
     checkpoint_config = VLAPolicyConfig(**payload["config"])
-    mismatch = _config_mismatch_message(checkpoint_config, config)
+    allowed_mismatch = ACTION_HEAD_CONFIG_KEYS if reset_action_head else None
+    mismatch = _config_mismatch_message(checkpoint_config, config, allowed_mismatch)
     if mismatch is not None:
         raise ValueError(mismatch)
-    unwrap_model(model).load_state_dict(payload["model"])
-    optimizer.load_state_dict(payload["optimizer"])
-    if scaler is not None and payload.get("scaler") is not None:
+    raw_model = unwrap_model(model)
+    if reset_action_head:
+        current_state = raw_model.state_dict()
+        loaded_state = {}
+        skipped = []
+        for key, value in payload["model"].items():
+            if key.startswith("action_head."):
+                skipped.append(key)
+                continue
+            if key not in current_state or current_state[key].shape != value.shape:
+                skipped.append(key)
+                continue
+            loaded_state[key] = value
+        raw_model.load_state_dict(loaded_state, strict=False)
+        print(
+            json.dumps(
+                {
+                    "event": "checkpoint_model_initialized",
+                    "path": str(checkpoint_path),
+                    "loaded_tensors": len(loaded_state),
+                    "skipped_tensors": len(skipped),
+                    "reset_action_head": True,
+                    "optimizer_loaded": False,
+                }
+            )
+        )
+    else:
+        raw_model.load_state_dict(payload["model"])
+        optimizer.load_state_dict(payload["optimizer"])
+    if not reset_action_head and scaler is not None and payload.get("scaler") is not None:
         scaler.load_state_dict(payload["scaler"])
     step = int(payload.get("step", 0))
     print(json.dumps({"event": "checkpoint_loaded", "step": step, "path": str(checkpoint_path)}))
@@ -475,7 +563,15 @@ def main() -> None:
 
     step = 0
     if args.resume_checkpoint is not None:
-        step = load_checkpoint(args.resume_checkpoint, model, optimizer, scaler, config, device)
+        step = load_checkpoint(
+            args.resume_checkpoint,
+            model,
+            optimizer,
+            scaler,
+            config,
+            device,
+            reset_action_head=args.reset_action_head_on_resume,
+        )
     if distributed:
         dist.barrier()
 

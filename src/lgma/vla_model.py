@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 from typing import Literal
 
 import torch
@@ -9,6 +10,7 @@ import torch.nn.functional as F
 
 from lgma.transformer import TransformerBlock
 
+VLAActionHeadType = Literal["mlp", "flow"]
 VLAAttentionType = Literal[
     "mha",
     "shared_identity",
@@ -47,6 +49,10 @@ class VLAPolicyConfig:
     value_dim: int | None = None
     value_beta: float | None = None
     value_transform: str = "none"
+    action_head: VLAActionHeadType = "mlp"
+    flow_hidden_mult: int = 2
+    flow_sampling_steps: int = 10
+    flow_noise_scale: float = 1.0
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -76,6 +82,62 @@ class SimpleVisionEncoder(nn.Module):
         x = self.net(x).flatten(1)
         x = self.proj(x)
         return x.view(batch, views, -1)
+
+
+def timestep_embedding(timestep: torch.Tensor, dim: int) -> torch.Tensor:
+    if timestep.ndim != 1:
+        raise ValueError(f"timestep must be [B], got {tuple(timestep.shape)}")
+    half = dim // 2
+    if half == 0:
+        return timestep[:, None]
+    freq = torch.exp(
+        -torch.arange(half, device=timestep.device, dtype=torch.float32)
+        * (math.log(10000.0) / max(half - 1, 1))
+    )
+    angles = timestep.float()[:, None] * freq[None, :]
+    emb = torch.cat([torch.sin(angles), torch.cos(angles)], dim=-1)
+    if dim % 2:
+        emb = F.pad(emb, (0, 1))
+    return emb.to(dtype=timestep.dtype)
+
+
+class FlowActionHead(nn.Module):
+    """Conditional flow-matching head over full action chunks."""
+
+    def __init__(
+        self,
+        d_model: int,
+        action_dim: int,
+        hidden_dim: int,
+    ) -> None:
+        super().__init__()
+        self.time_mlp = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model),
+        )
+        self.net = nn.Sequential(
+            nn.Linear(d_model * 2 + action_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, action_dim),
+        )
+
+    def forward(
+        self,
+        context: torch.Tensor,
+        noisy_action: torch.Tensor,
+        timestep: torch.Tensor,
+    ) -> torch.Tensor:
+        if noisy_action.shape[:2] != context.shape[:2]:
+            raise ValueError(
+                "noisy_action and context batch/horizon must match, got "
+                f"{tuple(noisy_action.shape)} vs {tuple(context.shape)}"
+            )
+        time = timestep_embedding(timestep, context.shape[-1])
+        time = self.time_mlp(time).unsqueeze(1).expand(-1, context.shape[1], -1)
+        return self.net(torch.cat([context, noisy_action, time], dim=-1))
 
 
 class VLATransformerPolicy(nn.Module):
@@ -123,11 +185,24 @@ class VLATransformerPolicy(nn.Module):
             ]
         )
         self.norm = nn.LayerNorm(config.d_model)
-        self.action_head = nn.Sequential(
-            nn.Linear(config.d_model, config.d_model),
-            nn.GELU(),
-            nn.Linear(config.d_model, config.action_dim),
-        )
+        if config.action_head == "mlp":
+            self.action_head = nn.Sequential(
+                nn.Linear(config.d_model, config.d_model),
+                nn.GELU(),
+                nn.Linear(config.d_model, config.action_dim),
+            )
+        elif config.action_head == "flow":
+            if config.flow_hidden_mult <= 0:
+                raise ValueError("flow_hidden_mult must be positive")
+            if config.flow_noise_scale <= 0.0:
+                raise ValueError("flow_noise_scale must be positive")
+            self.action_head = FlowActionHead(
+                d_model=config.d_model,
+                action_dim=config.action_dim,
+                hidden_dim=config.d_model * config.flow_hidden_mult,
+            )
+        else:
+            raise ValueError(f"Unsupported action_head `{config.action_head}`")
         nn.init.normal_(self.text_pos, std=0.02)
         nn.init.normal_(self.view_embedding, std=0.02)
         nn.init.normal_(self.pos_embedding, std=0.02)
@@ -136,7 +211,7 @@ class VLATransformerPolicy(nn.Module):
     def attention_modules(self) -> list[nn.Module]:
         return [block.attn for block in self.blocks]
 
-    def forward(
+    def encode_action_context(
         self,
         image_input: torch.Tensor,
         image_mask: torch.Tensor,
@@ -172,8 +247,59 @@ class VLATransformerPolicy(nn.Module):
         for block in self.blocks:
             x = block(x)
         x = self.norm(x)
-        action_hidden = x[:, -self.config.action_horizon :, :]
-        return self.action_head(action_hidden)
+        return x[:, -self.config.action_horizon :, :]
+
+    def sample_actions_from_context(
+        self,
+        action_context: torch.Tensor,
+        steps: int | None = None,
+    ) -> torch.Tensor:
+        if self.config.action_head != "flow":
+            return self.action_head(action_context)
+        steps = int(steps or self.config.flow_sampling_steps)
+        if steps <= 0:
+            raise ValueError("flow sampling steps must be positive")
+        action = torch.randn(
+            action_context.shape[0],
+            action_context.shape[1],
+            self.config.action_dim,
+            device=action_context.device,
+            dtype=action_context.dtype,
+        ) * self.config.flow_noise_scale
+        dt = 1.0 / steps
+        for idx in range(steps):
+            timestep = torch.full(
+                (action_context.shape[0],),
+                idx / steps,
+                device=action_context.device,
+                dtype=action_context.dtype,
+            )
+            velocity = self.action_head(action_context, action, timestep)
+            action = action + dt * velocity
+        return action
+
+    def forward(
+        self,
+        image_input: torch.Tensor,
+        image_mask: torch.Tensor,
+        text_token_ids: torch.Tensor,
+        proprio: torch.Tensor,
+        noisy_action: torch.Tensor | None = None,
+        flow_timestep: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        action_context = self.encode_action_context(
+            image_input=image_input,
+            image_mask=image_mask,
+            text_token_ids=text_token_ids,
+            proprio=proprio,
+        )
+        if self.config.action_head == "mlp":
+            return self.action_head(action_context)
+        if noisy_action is None:
+            return self.sample_actions_from_context(action_context)
+        if flow_timestep is None:
+            raise ValueError("flow_timestep is required when noisy_action is provided")
+        return self.action_head(action_context, noisy_action, flow_timestep)
 
 
 def ee6d_loss(pred: torch.Tensor, target: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -190,6 +316,24 @@ def ee6d_loss(pred: torch.Tensor, target: torch.Tensor) -> dict[str, torch.Tenso
         pred[..., gripper_idx],
         target[..., gripper_idx].clamp(0.0, 1.0),
     )
+    return {
+        "position_loss": pos_loss,
+        "rotate6D_loss": rot_loss,
+        "gripper_loss": gripper_loss,
+    }
+
+
+def ee6d_continuous_loss(pred: torch.Tensor, target: torch.Tensor) -> dict[str, torch.Tensor]:
+    if pred.shape != target.shape:
+        raise ValueError(f"pred/target shapes must match, got {pred.shape} vs {target.shape}")
+    if pred.shape[-1] != 20:
+        raise ValueError("EE6D loss expects 20D dual-arm padded actions")
+    gripper_idx = (9, 19)
+    pos_idx = (0, 1, 2, 10, 11, 12)
+    rot_idx = (3, 4, 5, 6, 7, 8, 13, 14, 15, 16, 17, 18)
+    pos_loss = F.mse_loss(pred[..., pos_idx], target[..., pos_idx]) * 500.0
+    rot_loss = F.mse_loss(pred[..., rot_idx], target[..., rot_idx]) * 10.0
+    gripper_loss = F.mse_loss(pred[..., gripper_idx], target[..., gripper_idx])
     return {
         "position_loss": pos_loss,
         "rotate6D_loss": rot_loss,
