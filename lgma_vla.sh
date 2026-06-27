@@ -10,6 +10,9 @@ WANDB_TAGS="${WANDB_TAGS:-libero,vla,lgma_residual,multibase,b2}"
 WANDB_MODE="${WANDB_MODE:-online}"
 VALUE_TRANSFORM="${VALUE_TRANSFORM:-none}"
 RESUME_CHECKPOINT="${RESUME_CHECKPOINT:-}"
+ACTION_HEAD="${ACTION_HEAD:-mlp}"
+FLOW_SAMPLING_STEPS="${FLOW_SAMPLING_STEPS:-10}"
+RESET_ACTION_HEAD_ON_RESUME="${RESET_ACTION_HEAD_ON_RESUME:-0}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 if (( NPROC_PER_NODE > 1 )); then
   DEVICE="${DEVICE:-cuda}"
@@ -21,6 +24,12 @@ fi
 EXTRA_ARGS=()
 if [[ -n "${RESUME_CHECKPOINT}" ]]; then
   EXTRA_ARGS+=(--resume_checkpoint "${RESUME_CHECKPOINT}")
+fi
+if [[ "${ACTION_HEAD}" == "flow" ]]; then
+  EXTRA_ARGS+=(--action_head flow --flow_sampling_steps "${FLOW_SAMPLING_STEPS}")
+fi
+if [[ "${RESET_ACTION_HEAD_ON_RESUME}" == "1" ]]; then
+  EXTRA_ARGS+=(--reset_action_head_on_resume)
 fi
 
 "${LAUNCHER[@]}" \
