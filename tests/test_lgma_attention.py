@@ -133,7 +133,7 @@ def test_identity_collapse_gives_identical_attention_maps():
         generator_type="full",
         use_sdpa=False,
     )
-    layer.theta.data.zero_()
+    layer.generators.data.zero_()
     x = torch.randn(2, 8, 32)
     _, attn = layer(x, need_weights=True)
     for head in range(1, layer.num_heads):
@@ -152,7 +152,7 @@ def test_residual_metric_mode_returns_identity_plus_delta():
         use_sdpa=False,
     )
     generators = layer._dense_generators()
-    delta = torch.einsum("hm,mde->hde", layer.theta, generators)
+    delta = torch.einsum("hm,mde->hde", layer.metric_theta_weights(), generators)
     expected = torch.eye(4)[None, :, :] + 0.25 * delta
     assert torch.allclose(layer.compute_metrics(), expected, atol=1e-6)
 
@@ -169,7 +169,7 @@ def test_quadratic_metric_mode_returns_second_order_expansion():
         use_sdpa=False,
     )
     generators = layer._dense_generators()
-    delta = 0.25 * torch.einsum("hm,mde->hde", layer.theta, generators)
+    delta = 0.25 * torch.einsum("hm,mde->hde", layer.metric_theta_weights(), generators)
     expected = torch.eye(4)[None, :, :] + delta + 0.5 * torch.matmul(delta, delta)
     assert torch.allclose(layer.compute_metrics(), expected, atol=1e-6)
 
@@ -246,7 +246,7 @@ def test_rms_metric_scaling_preserves_identity_scale():
         logit_scale_mode="rms_metric",
         use_sdpa=False,
     )
-    layer.theta.data.zero_()
+    layer.generators.data.zero_()
     scale = layer._score_scale()
     assert torch.allclose(scale, torch.full_like(scale, 2.0), atol=1e-6)
 
@@ -326,7 +326,7 @@ def test_lie_value_transform_identity_matches_no_transform():
         use_sdpa=False,
     )
     transformed.load_state_dict(base.state_dict(), strict=False)
-    transformed.value_theta.data.zero_()
+    transformed.value_generators.data.zero_()
     x = torch.randn(2, 5, 16)
     y_base, attn_base = base(x, need_weights=True)
     y_transformed, attn_transformed = transformed(x, need_weights=True)
@@ -379,7 +379,7 @@ def test_quadratic_lie_value_transform_returns_second_order_expansion():
         use_sdpa=False,
     )
     generators = layer._dense_value_generators()
-    delta = 0.25 * torch.einsum("hm,mde->hde", layer.value_theta, generators)
+    delta = 0.25 * torch.einsum("hm,mde->hde", layer.value_theta_weights(), generators)
     expected = torch.eye(3)[None, :, :] + delta + 0.5 * torch.matmul(delta, delta)
     assert torch.allclose(layer.compute_value_transforms(), expected, atol=1e-6)
 
@@ -566,27 +566,41 @@ def test_diagonal_fast_path_matches_dense_diagonal_metric_scores():
     assert torch.allclose(scores_fast, scores_dense, atol=1e-6)
 
 
-def test_compute_head_generators_returns_beta_scaled_ah():
+def test_theta_weights_are_simplex_normalized():
     layer = LieGeneratedMetricAttention(
         8,
         num_heads=2,
         head_dim=2,
-        num_generators=1,
+        num_generators=3,
+        generator_type="full",
+        use_sdpa=False,
+    )
+    layer.theta.data = torch.tensor([[2.0, 0.0, -2.0], [-1.0, 1.0, 3.0]])
+
+    weights = layer.metric_theta_weights()
+    assert torch.all(weights >= 0.0)
+    assert torch.all(weights <= 1.0)
+    assert torch.allclose(weights.sum(dim=-1), torch.ones(2))
+
+
+def test_compute_head_generators_returns_beta_scaled_softmax_mixture():
+    layer = LieGeneratedMetricAttention(
+        8,
+        num_heads=2,
+        head_dim=2,
+        num_generators=2,
         generator_type="full",
         stabilize_generators=False,
         metric_beta=0.5,
         use_sdpa=False,
     )
-    layer.theta.data = torch.tensor([[2.0], [4.0]])
+    layer.theta.data = torch.tensor([[2.0, 0.0], [0.0, 2.0]])
     layer.generators.data.zero_()
     layer.generators.data[0] = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    layer.generators.data[1] = torch.tensor([[5.0, 6.0], [7.0, 8.0]])
 
-    expected = torch.stack(
-        [
-            torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
-            torch.tensor([[2.0, 4.0], [6.0, 8.0]]),
-        ]
-    )
+    weights = layer.metric_theta_weights()
+    expected = 0.5 * torch.einsum("hm,mde->hde", weights, layer.generators)
     assert torch.allclose(layer.compute_head_generators(), expected)
 
 

@@ -260,11 +260,23 @@ class LieGeneratedMetricAttention(nn.Module):
         if self.metric_mode == "unconstrained":
             return self.metric_beta * self.raw_metrics
         generators = self._dense_generators()
-        head_generators = torch.einsum("hm,mde->hde", self.theta, generators)
+        head_generators = torch.einsum("hm,mde->hde", self.metric_theta_weights(), generators)
         head_generators = self.metric_beta * head_generators
         if self.generator_type == "symmetric":
             head_generators = 0.5 * (head_generators + head_generators.transpose(-1, -2))
         return head_generators
+
+    def metric_theta_weights(self) -> torch.Tensor:
+        """Return simplex-normalized generator weights for each metric head."""
+        if not hasattr(self, "theta"):
+            raise AttributeError("unconstrained metric mode does not use theta")
+        return torch.softmax(self.theta, dim=-1)
+
+    def value_theta_weights(self) -> torch.Tensor:
+        """Return simplex-normalized generator weights for each value head."""
+        if not hasattr(self, "value_theta"):
+            raise AttributeError("value transform mode does not use value_theta")
+        return torch.softmax(self.value_theta, dim=-1)
 
     def _clip_metric_singular_values(self, metrics: torch.Tensor) -> torch.Tensor:
         if self.metric_clip_min is None and self.metric_clip_max is None:
@@ -285,7 +297,7 @@ class LieGeneratedMetricAttention(nn.Module):
             return self._clip_metric_singular_values(metrics)
 
         if self.generator_type == "diagonal":
-            diagonal = torch.einsum("hm,md->hd", self.theta, self.generators)
+            diagonal = torch.einsum("hm,md->hd", self.metric_theta_weights(), self.generators)
             diagonal = self.metric_beta * diagonal
             if self.metric_mode == "residual":
                 metrics = torch.diag_embed(1.0 + diagonal)
@@ -343,7 +355,11 @@ class LieGeneratedMetricAttention(nn.Module):
             return eye[None, :, :] + self.value_beta * self.raw_value_transforms
 
         if self.generator_type == "diagonal":
-            diagonal = torch.einsum("hm,md->hd", self.value_theta, self.value_generators)
+            diagonal = torch.einsum(
+                "hm,md->hd",
+                self.value_theta_weights(),
+                self.value_generators,
+            )
             diagonal = self.value_beta * diagonal
             if self.value_transform_mode == "residual":
                 return torch.diag_embed(1.0 + diagonal)
@@ -353,7 +369,7 @@ class LieGeneratedMetricAttention(nn.Module):
             return torch.diag_embed(scale)
 
         generators = self._dense_value_generators()
-        head_generators = torch.einsum("hm,mde->hde", self.value_theta, generators)
+        head_generators = torch.einsum("hm,mde->hde", self.value_theta_weights(), generators)
         head_generators = self.value_beta * head_generators
         if self.generator_type == "symmetric":
             head_generators = 0.5 * (head_generators + head_generators.transpose(-1, -2))
@@ -408,7 +424,7 @@ class LieGeneratedMetricAttention(nn.Module):
             and self.metric_clip_min is None
             and self.metric_clip_max is None
         ):
-            diagonal = torch.einsum("hm,md->hd", self.theta, self.generators)
+            diagonal = torch.einsum("hm,md->hd", self.metric_theta_weights(), self.generators)
             diagonal = self.metric_beta * diagonal
             if self.metric_mode == "residual":
                 scale = 1.0 + diagonal
@@ -476,7 +492,11 @@ class LieGeneratedMetricAttention(nn.Module):
             self.value_dim,
         )
         if self.value_transform_mode in {"exp", "residual", "quadratic"} and self.generator_type == "diagonal":
-            diagonal = torch.einsum("hm,md->hd", self.value_theta, self.value_generators)
+            diagonal = torch.einsum(
+                "hm,md->hd",
+                self.value_theta_weights(),
+                self.value_generators,
+            )
             diagonal = self.value_beta * diagonal
             if self.value_transform_mode == "residual":
                 scale = 1.0 + diagonal
