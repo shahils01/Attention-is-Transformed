@@ -228,25 +228,31 @@ class LieGeneratedMetricAttention(nn.Module):
 
     def _dense_generators(self) -> torch.Tensor:
         if self.generator_type == "diagonal":
-            return torch.diag_embed(self.generators)
+            return torch.diag_embed(self._normalize_generators(self.generators))
 
         generators = self.generators
         if self.generator_type == "symmetric":
             generators = 0.5 * (generators + generators.transpose(-1, -2))
         if self.stabilize_generators:
             generators = self._make_trace_zero(generators)
-        return generators
+        return self._normalize_generators(generators)
 
     def _dense_value_generators(self) -> torch.Tensor:
         if self.generator_type == "diagonal":
-            return torch.diag_embed(self.value_generators)
+            return torch.diag_embed(self._normalize_generators(self.value_generators))
 
         generators = self.value_generators
         if self.generator_type == "symmetric":
             generators = 0.5 * (generators + generators.transpose(-1, -2))
         if self.stabilize_generators:
             generators = self._make_trace_zero(generators)
-        return generators
+        return self._normalize_generators(generators)
+
+    @staticmethod
+    def _normalize_generators(generators: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+        norms = generators.float().reshape(generators.shape[0], -1).norm(dim=-1)
+        scale = norms.clamp_min(eps).to(dtype=generators.dtype)
+        return generators / scale.view(-1, *([1] * (generators.ndim - 1)))
 
     @staticmethod
     def _make_trace_zero(generators: torch.Tensor) -> torch.Tensor:
@@ -297,7 +303,11 @@ class LieGeneratedMetricAttention(nn.Module):
             return self._clip_metric_singular_values(metrics)
 
         if self.generator_type == "diagonal":
-            diagonal = torch.einsum("hm,md->hd", self.metric_theta_weights(), self.generators)
+            diagonal = torch.einsum(
+                "hm,md->hd",
+                self.metric_theta_weights(),
+                self._normalize_generators(self.generators),
+            )
             diagonal = self.metric_beta * diagonal
             if self.metric_mode == "residual":
                 metrics = torch.diag_embed(1.0 + diagonal)
@@ -358,7 +368,7 @@ class LieGeneratedMetricAttention(nn.Module):
             diagonal = torch.einsum(
                 "hm,md->hd",
                 self.value_theta_weights(),
-                self.value_generators,
+                self._normalize_generators(self.value_generators),
             )
             diagonal = self.value_beta * diagonal
             if self.value_transform_mode == "residual":
@@ -424,7 +434,11 @@ class LieGeneratedMetricAttention(nn.Module):
             and self.metric_clip_min is None
             and self.metric_clip_max is None
         ):
-            diagonal = torch.einsum("hm,md->hd", self.metric_theta_weights(), self.generators)
+            diagonal = torch.einsum(
+                "hm,md->hd",
+                self.metric_theta_weights(),
+                self._normalize_generators(self.generators),
+            )
             diagonal = self.metric_beta * diagonal
             if self.metric_mode == "residual":
                 scale = 1.0 + diagonal
@@ -495,7 +509,7 @@ class LieGeneratedMetricAttention(nn.Module):
             diagonal = torch.einsum(
                 "hm,md->hd",
                 self.value_theta_weights(),
-                self.value_generators,
+                self._normalize_generators(self.value_generators),
             )
             diagonal = self.value_beta * diagonal
             if self.value_transform_mode == "residual":
