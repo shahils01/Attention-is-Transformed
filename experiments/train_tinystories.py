@@ -87,6 +87,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad_accum_steps", type=int, default=1)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument(
+        "--lr_schedule",
+        choices=["constant", "cosine"],
+        default="constant",
+        help="Learning-rate schedule after optional warmup.",
+    )
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=0,
+        help="Linearly warm up from 0 to --lr over this many optimizer steps.",
+    )
+    parser.add_argument(
+        "--min_lr",
+        type=float,
+        default=0.0,
+        help="Final LR for cosine decay. Ignored by the constant schedule.",
+    )
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--precision", choices=["fp32", "bf16", "fp16"], default="fp32")
@@ -280,6 +298,35 @@ def autocast_context(device: torch.device, precision: str):
 def make_grad_scaler(device: torch.device, precision: str):
     enabled = device.type == "cuda" and precision == "fp16"
     return torch.cuda.amp.GradScaler(enabled=enabled)
+
+
+def learning_rate_for_step(
+    step: int,
+    *,
+    base_lr: float,
+    min_lr: float,
+    total_steps: int,
+    warmup_steps: int,
+    schedule: str,
+) -> float:
+    if step <= 0:
+        raise ValueError("step must be positive")
+    if warmup_steps > 0 and step <= warmup_steps:
+        return base_lr * step / warmup_steps
+    if schedule == "constant":
+        return base_lr
+    if schedule != "cosine":
+        raise ValueError(f"unsupported lr schedule: {schedule}")
+
+    decay_steps = max(total_steps - warmup_steps, 1)
+    decay_step = min(max(step - warmup_steps, 0), decay_steps)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * decay_step / decay_steps))
+    return min_lr + (base_lr - min_lr) * cosine
+
+
+def set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
+    for group in optimizer.param_groups:
+        group["lr"] = lr
 
 
 def write_jsonl(path: Path | None, payload: dict[str, object]) -> None:
@@ -725,6 +772,14 @@ def main() -> None:
     args = parse_args()
     if args.grad_accum_steps <= 0:
         raise SystemExit("--grad_accum_steps must be positive")
+    if args.lr <= 0:
+        raise SystemExit("--lr must be positive")
+    if args.warmup_steps < 0:
+        raise SystemExit("--warmup_steps must be non-negative")
+    if args.min_lr < 0:
+        raise SystemExit("--min_lr must be non-negative")
+    if args.min_lr > args.lr:
+        raise SystemExit("--min_lr must be <= --lr")
     if args.log_every < 0 or args.eval_every < 0 or args.save_every < 0:
         raise SystemExit("--log_every, --eval_every, and --save_every must be non-negative")
     if args.metric_clip_min is not None and args.metric_clip_min < 0:
@@ -849,6 +904,15 @@ def main() -> None:
 
         for step_idx in range(start_step, args.steps):
             step = step_idx + 1
+            current_lr = learning_rate_for_step(
+                step,
+                base_lr=args.lr,
+                min_lr=args.min_lr,
+                total_steps=args.steps,
+                warmup_steps=args.warmup_steps,
+                schedule=args.lr_schedule,
+            )
+            set_optimizer_lr(optimizer, current_lr)
             optimizer.zero_grad(set_to_none=True)
 
             task_losses = []

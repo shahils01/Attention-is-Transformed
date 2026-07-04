@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import torch
@@ -47,6 +48,28 @@ def test_multi_relation_targets_apply_selected_relation():
         else:
             expected = torch.cat([data[:, 1:], data[:, -1:]], dim=1)
         assert torch.equal(target_body, expected)
+
+
+def test_tinystories_learning_rate_schedule():
+    import sys
+
+    sys.path.insert(0, str(ROOT / "experiments"))
+    import train_tinystories
+
+    kwargs = {
+        "base_lr": 1e-4,
+        "min_lr": 1e-5,
+        "total_steps": 10,
+        "warmup_steps": 2,
+        "schedule": "cosine",
+    }
+    assert train_tinystories.learning_rate_for_step(1, **kwargs) == 5e-5
+    assert train_tinystories.learning_rate_for_step(2, **kwargs) == 1e-4
+    assert math.isclose(
+        train_tinystories.learning_rate_for_step(10, **kwargs),
+        1e-5,
+        rel_tol=1e-6,
+    )
 
 
 def test_tiny_lm_forward_loss_for_attention_variants():
