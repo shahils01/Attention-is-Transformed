@@ -100,6 +100,12 @@ def parse_args() -> argparse.Namespace:
         help="Linearly warm up from 0 to --lr over this many optimizer steps.",
     )
     parser.add_argument(
+        "--lr_hold_steps",
+        type=int,
+        default=0,
+        help="Keep --lr constant for this many steps after warmup before decay.",
+    )
+    parser.add_argument(
         "--min_lr",
         type=float,
         default=0.0,
@@ -307,19 +313,23 @@ def learning_rate_for_step(
     min_lr: float,
     total_steps: int,
     warmup_steps: int,
+    hold_steps: int,
     schedule: str,
 ) -> float:
     if step <= 0:
         raise ValueError("step must be positive")
     if warmup_steps > 0 and step <= warmup_steps:
         return base_lr * step / warmup_steps
+    hold_end = warmup_steps + hold_steps
+    if step <= hold_end:
+        return base_lr
     if schedule == "constant":
         return base_lr
     if schedule != "cosine":
         raise ValueError(f"unsupported lr schedule: {schedule}")
 
-    decay_steps = max(total_steps - warmup_steps, 1)
-    decay_step = min(max(step - warmup_steps, 0), decay_steps)
+    decay_steps = max(total_steps - hold_end, 1)
+    decay_step = min(max(step - hold_end, 0), decay_steps)
     cosine = 0.5 * (1.0 + math.cos(math.pi * decay_step / decay_steps))
     return min_lr + (base_lr - min_lr) * cosine
 
@@ -776,6 +786,8 @@ def main() -> None:
         raise SystemExit("--lr must be positive")
     if args.warmup_steps < 0:
         raise SystemExit("--warmup_steps must be non-negative")
+    if args.lr_hold_steps < 0:
+        raise SystemExit("--lr_hold_steps must be non-negative")
     if args.min_lr < 0:
         raise SystemExit("--min_lr must be non-negative")
     if args.min_lr > args.lr:
@@ -910,6 +922,7 @@ def main() -> None:
                 min_lr=args.min_lr,
                 total_steps=args.steps,
                 warmup_steps=args.warmup_steps,
+                hold_steps=args.lr_hold_steps,
                 schedule=args.lr_schedule,
             )
             set_optimizer_lr(optimizer, current_lr)

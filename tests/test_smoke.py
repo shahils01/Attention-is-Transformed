@@ -61,10 +61,12 @@ def test_tinystories_learning_rate_schedule():
         "min_lr": 1e-5,
         "total_steps": 10,
         "warmup_steps": 2,
+        "hold_steps": 3,
         "schedule": "cosine",
     }
     assert train_tinystories.learning_rate_for_step(1, **kwargs) == 5e-5
     assert train_tinystories.learning_rate_for_step(2, **kwargs) == 1e-4
+    assert train_tinystories.learning_rate_for_step(5, **kwargs) == 1e-4
     assert math.isclose(
         train_tinystories.learning_rate_for_step(10, **kwargs),
         1e-5,
