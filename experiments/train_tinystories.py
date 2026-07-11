@@ -144,6 +144,12 @@ def parse_args() -> argparse.Namespace:
         help="LGMA generator initialization scale before division by sqrt(head_dim).",
     )
     parser.add_argument(
+        "--normalize_generators",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Normalize each metric and Lie-value generator to unit Frobenius norm.",
+    )
+    parser.add_argument(
         "--metric_mode",
         choices=["exp", "residual", "quadratic", "unconstrained"],
         default=None,
@@ -366,6 +372,7 @@ def effective_attention_config(module) -> dict[str, object]:
         "generated_heads_per_base",
         "num_generators",
         "generator_type",
+        "normalize_generators",
         "metric_mode",
         "metric_beta",
         "metric_clip_min",
@@ -399,6 +406,7 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
         "causal": not args.non_causal,
         "theta_init_scale": 0.02,
         "generator_init_scale": 0.02,
+        "normalize_generators": False,
         "base_dim": None,
         "value_dim": None,
         "num_base_heads": 1,
@@ -430,6 +438,7 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
         "dropout": args.dropout,
         "theta_init_scale": args.theta_init_scale,
         "generator_init_scale": args.generator_init_scale,
+        "normalize_generators": args.normalize_generators,
         "metric_mode": args.metric_mode,
         "metric_beta": args.metric_beta,
         "metric_clip_min": args.metric_clip_min,

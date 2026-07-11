@@ -78,6 +78,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generator_type", choices=GENERATOR_TYPES, default="full")
     parser.add_argument("--theta_init_scale", type=float, default=0.02)
     parser.add_argument("--generator_init_scale", type=float, default=0.02)
+    parser.add_argument(
+        "--normalize_generators",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Normalize each metric and Lie-value generator to unit Frobenius norm.",
+    )
     parser.add_argument("--base_dim", type=int, default=None)
     parser.add_argument("--value_dim", type=int, default=None)
     parser.add_argument(
@@ -231,6 +237,7 @@ def make_config(args: argparse.Namespace) -> VLAPolicyConfig:
         generator_type=args.generator_type,
         theta_init_scale=args.theta_init_scale,
         generator_init_scale=args.generator_init_scale,
+        normalize_generators=args.normalize_generators,
         num_base_heads=num_base_heads,
         base_dim=args.base_dim,
         value_dim=args.value_dim,

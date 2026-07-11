@@ -397,6 +397,7 @@ def test_value_beta_scales_value_lie_separately_from_metric_beta():
         metric_beta=1.0,
         value_beta=0.25,
         value_transform="lie_residual",
+        normalize_generators=True,
         use_sdpa=False,
     )
     layer.theta.data.fill_(1.0)
@@ -622,6 +623,7 @@ def test_dense_generators_are_frobenius_normalized():
         num_generators=2,
         generator_type="full",
         stabilize_generators=False,
+        normalize_generators=True,
         use_sdpa=False,
     )
     layer.generators.data[0] = torch.tensor([[3.0, 4.0], [0.0, 0.0]])
@@ -639,6 +641,7 @@ def test_diagonal_generators_are_l2_normalized_before_dense_embedding():
         head_dim=3,
         num_generators=1,
         generator_type="diagonal",
+        normalize_generators=True,
         use_sdpa=False,
     )
     layer.generators.data[0] = torch.tensor([3.0, 4.0, 0.0])
@@ -646,6 +649,22 @@ def test_diagonal_generators_are_l2_normalized_before_dense_embedding():
     generators = layer._dense_generators()
     assert torch.allclose(generators[0].diagonal(), torch.tensor([0.6, 0.8, 0.0]))
     assert torch.allclose(generators.reshape(1, -1).norm(dim=-1), torch.ones(1))
+
+
+def test_generator_normalization_is_disabled_by_default():
+    layer = LieGeneratedMetricAttention(
+        8,
+        num_heads=1,
+        head_dim=2,
+        num_generators=1,
+        generator_type="full",
+        stabilize_generators=False,
+        use_sdpa=False,
+    )
+    layer.generators.data[0] = torch.tensor([[3.0, 4.0], [0.0, 0.0]])
+
+    assert not layer.normalize_generators
+    assert torch.equal(layer._dense_generators(), layer.generators)
 
 
 def test_metric_singular_value_clipping_bounds_metrics():

@@ -73,6 +73,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--generator_type", choices=["full", "diagonal", "symmetric"], default="full")
     parser.add_argument("--num_generators", type=int, default=2)
+    parser.add_argument(
+        "--normalize_generators",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Normalize each metric and Lie-value generator to unit Frobenius norm.",
+    )
     parser.add_argument("--base_dim", type=int, default=None)
     parser.add_argument("--value_dim", type=int, default=None)
     parser.add_argument("--num_base_heads", type=int, default=1)
@@ -225,6 +231,7 @@ def effective_attention_config(module) -> dict[str, object]:
         "generated_heads_per_base",
         "num_generators",
         "generator_type",
+        "normalize_generators",
         "metric_mode",
         "metric_beta",
         "metric_clip_min",
@@ -482,6 +489,7 @@ def main() -> None:
         causal=args.causal,
         theta_init_scale=args.theta_init_scale,
         generator_init_scale=args.generator_init_scale,
+        normalize_generators=args.normalize_generators,
         base_dim=args.base_dim,
         value_dim=args.value_dim,
         metric_mode=args.metric_mode,
@@ -587,6 +595,7 @@ def main() -> None:
         "causal": args.causal,
         "theta_init_scale": args.theta_init_scale,
         "generator_init_scale": args.generator_init_scale,
+        "normalize_generators": args.normalize_generators,
         "base_dim": args.base_dim,
         "value_dim": args.value_dim,
         "num_base_heads": args.num_base_heads,

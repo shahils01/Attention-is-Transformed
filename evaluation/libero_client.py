@@ -59,6 +59,8 @@ def _flip_agentview(image: np.ndarray) -> np.ndarray:
 
 class LIBEROLocalPolicy:
     def __init__(self, checkpoint: str | Path, device: str = "cuda:0", action_chunk: int | None = None):
+        if action_chunk is not None and action_chunk <= 0:
+            raise ValueError("action_chunk must be positive, or None to execute the full predicted horizon")
         self.planner = VLAActionPlanner(checkpoint=checkpoint, device=device, action_chunk=action_chunk)
 
     def reset(self) -> None:
@@ -219,8 +221,14 @@ def main() -> None:
     parser.add_argument("--init_seed", type=int, default=42)
     parser.add_argument("--act_type", choices=["abs", "rel"], default="abs")
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--action_chunk", type=int, default=10)
+    parser.add_argument(
+        "--action_chunk",
+        type=int,
+        default=1,
+        help="Predicted actions to execute before replanning. Use 1 for receding-horizon eval; use 0 for full horizon.",
+    )
     args = parser.parse_args()
+    action_chunk = None if args.action_chunk == 0 else args.action_chunk
 
     results = eval_libero(
         checkpoint=args.checkpoint,
@@ -230,7 +238,7 @@ def main() -> None:
         init_seed=args.init_seed,
         act_type=args.act_type,
         device=args.device,
-        action_chunk=args.action_chunk,
+        action_chunk=action_chunk,
     )
     print(json.dumps(results, indent=2))
 

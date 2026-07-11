@@ -74,6 +74,33 @@ def test_tinystories_learning_rate_schedule():
     )
 
 
+def test_tinystories_generator_normalization_is_opt_in():
+    import sys
+
+    sys.path.insert(0, str(ROOT / "experiments"))
+    import train_tinystories
+
+    old_argv = sys.argv
+    try:
+        sys.argv = ["train_tinystories.py", "--data_path", "unused.txt"]
+        default_config = train_tinystories.model_config_from_args(train_tinystories.parse_args())
+
+        sys.argv = [
+            "train_tinystories.py",
+            "--data_path",
+            "unused.txt",
+            "--normalize_generators",
+        ]
+        normalized_config = train_tinystories.model_config_from_args(
+            train_tinystories.parse_args()
+        )
+    finally:
+        sys.argv = old_argv
+
+    assert default_config["normalize_generators"] is False
+    assert normalized_config["normalize_generators"] is True
+
+
 def test_tiny_lm_forward_loss_for_attention_variants():
     torch.manual_seed(0)
     for attention_type in (

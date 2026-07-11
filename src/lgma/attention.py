@@ -35,6 +35,7 @@ class LieGeneratedMetricAttention(nn.Module):
         use_sdpa: bool = True,
         causal: bool = False,
         stabilize_generators: bool = True,
+        normalize_generators: bool = False,
         theta_init_scale: float = 0.02,
         generator_init_scale: float = 0.02,
         base_dim: int | None = None,
@@ -101,6 +102,7 @@ class LieGeneratedMetricAttention(nn.Module):
         self.use_sdpa = use_sdpa
         self.causal = causal
         self.stabilize_generators = stabilize_generators
+        self.normalize_generators = normalize_generators
         self.theta_init_scale = theta_init_scale
         self.generator_init_scale = generator_init_scale
         self.metric_mode = metric_mode
@@ -228,24 +230,29 @@ class LieGeneratedMetricAttention(nn.Module):
 
     def _dense_generators(self) -> torch.Tensor:
         if self.generator_type == "diagonal":
-            return torch.diag_embed(self._normalize_generators(self.generators))
+            return torch.diag_embed(self._maybe_normalize_generators(self.generators))
 
         generators = self.generators
         if self.generator_type == "symmetric":
             generators = 0.5 * (generators + generators.transpose(-1, -2))
         if self.stabilize_generators:
             generators = self._make_trace_zero(generators)
-        return self._normalize_generators(generators)
+        return self._maybe_normalize_generators(generators)
 
     def _dense_value_generators(self) -> torch.Tensor:
         if self.generator_type == "diagonal":
-            return torch.diag_embed(self._normalize_generators(self.value_generators))
+            return torch.diag_embed(self._maybe_normalize_generators(self.value_generators))
 
         generators = self.value_generators
         if self.generator_type == "symmetric":
             generators = 0.5 * (generators + generators.transpose(-1, -2))
         if self.stabilize_generators:
             generators = self._make_trace_zero(generators)
+        return self._maybe_normalize_generators(generators)
+
+    def _maybe_normalize_generators(self, generators: torch.Tensor) -> torch.Tensor:
+        if not self.normalize_generators:
+            return generators
         return self._normalize_generators(generators)
 
     @staticmethod
@@ -306,7 +313,7 @@ class LieGeneratedMetricAttention(nn.Module):
             diagonal = torch.einsum(
                 "hm,md->hd",
                 self.metric_theta_weights(),
-                self._normalize_generators(self.generators),
+                self._maybe_normalize_generators(self.generators),
             )
             diagonal = self.metric_beta * diagonal
             if self.metric_mode == "residual":
@@ -368,7 +375,7 @@ class LieGeneratedMetricAttention(nn.Module):
             diagonal = torch.einsum(
                 "hm,md->hd",
                 self.value_theta_weights(),
-                self._normalize_generators(self.value_generators),
+                self._maybe_normalize_generators(self.value_generators),
             )
             diagonal = self.value_beta * diagonal
             if self.value_transform_mode == "residual":
@@ -437,7 +444,7 @@ class LieGeneratedMetricAttention(nn.Module):
             diagonal = torch.einsum(
                 "hm,md->hd",
                 self.metric_theta_weights(),
-                self._normalize_generators(self.generators),
+                self._maybe_normalize_generators(self.generators),
             )
             diagonal = self.metric_beta * diagonal
             if self.metric_mode == "residual":
@@ -509,7 +516,7 @@ class LieGeneratedMetricAttention(nn.Module):
             diagonal = torch.einsum(
                 "hm,md->hd",
                 self.value_theta_weights(),
-                self._normalize_generators(self.value_generators),
+                self._maybe_normalize_generators(self.value_generators),
             )
             diagonal = self.value_beta * diagonal
             if self.value_transform_mode == "residual":
