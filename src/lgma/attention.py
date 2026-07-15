@@ -36,6 +36,7 @@ class LieGeneratedMetricAttention(nn.Module):
         causal: bool = False,
         stabilize_generators: bool = True,
         normalize_generators: bool = False,
+        head_generator_symmetric_cap: float | None = None,
         theta_init_scale: float = 0.02,
         generator_init_scale: float = 0.02,
         base_dim: int | None = None,
@@ -74,8 +75,14 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError(f"unsupported value_transform: {value_transform}")
         if metric_mode == "unconstrained" and generator_type == "diagonal":
             raise ValueError("unconstrained metric_mode requires dense metrics")
+        if metric_mode == "unconstrained" and head_generator_symmetric_cap is not None:
+            raise ValueError(
+                "head_generator_symmetric_cap is unavailable for unconstrained metric_mode"
+            )
         if metric_clip_min is not None and metric_clip_min < 0:
             raise ValueError("metric_clip_min must be non-negative")
+        if head_generator_symmetric_cap is not None and head_generator_symmetric_cap <= 0:
+            raise ValueError("head_generator_symmetric_cap must be positive")
         if (
             metric_clip_min is not None
             and metric_clip_max is not None
@@ -103,6 +110,7 @@ class LieGeneratedMetricAttention(nn.Module):
         self.causal = causal
         self.stabilize_generators = stabilize_generators
         self.normalize_generators = normalize_generators
+        self.head_generator_symmetric_cap = head_generator_symmetric_cap
         self.theta_init_scale = theta_init_scale
         self.generator_init_scale = generator_init_scale
         self.metric_mode = metric_mode
@@ -272,12 +280,40 @@ class LieGeneratedMetricAttention(nn.Module):
         """Return dense per-head A_h generators after applying metric_beta."""
         if self.metric_mode == "unconstrained":
             return self.metric_beta * self.raw_metrics
+        if self.generator_type == "diagonal":
+            return torch.diag_embed(self._compute_metric_diagonal())
         generators = self._dense_generators()
         head_generators = torch.einsum("hm,mde->hde", self.metric_theta_weights(), generators)
         head_generators = self.metric_beta * head_generators
         if self.generator_type == "symmetric":
             head_generators = 0.5 * (head_generators + head_generators.transpose(-1, -2))
-        return head_generators
+        return self._maybe_cap_head_generator_symmetric_part(head_generators)
+
+    def _compute_metric_diagonal(self) -> torch.Tensor:
+        diagonal = torch.einsum(
+            "hm,md->hd",
+            self.metric_theta_weights(),
+            self._maybe_normalize_generators(self.generators),
+        )
+        diagonal = self.metric_beta * diagonal
+        if self.head_generator_symmetric_cap is None:
+            return diagonal
+        norms = diagonal.float().norm(dim=-1, keepdim=True)
+        scale = (self.head_generator_symmetric_cap / norms.clamp_min(1e-8)).clamp(max=1.0)
+        return diagonal * scale.to(dtype=diagonal.dtype)
+
+    def _maybe_cap_head_generator_symmetric_part(
+        self,
+        head_generators: torch.Tensor,
+    ) -> torch.Tensor:
+        """Radially cap sym(A_h), leaving the skew component unchanged."""
+        if self.head_generator_symmetric_cap is None:
+            return head_generators
+        symmetric = 0.5 * (head_generators + head_generators.transpose(-1, -2))
+        skew = 0.5 * (head_generators - head_generators.transpose(-1, -2))
+        norms = symmetric.float().norm(dim=(-2, -1), keepdim=True)
+        scale = (self.head_generator_symmetric_cap / norms.clamp_min(1e-8)).clamp(max=1.0)
+        return skew + symmetric * scale.to(dtype=head_generators.dtype)
 
     def metric_theta_weights(self) -> torch.Tensor:
         """Return simplex-normalized generator weights for each metric head."""
@@ -310,12 +346,7 @@ class LieGeneratedMetricAttention(nn.Module):
             return self._clip_metric_singular_values(metrics)
 
         if self.generator_type == "diagonal":
-            diagonal = torch.einsum(
-                "hm,md->hd",
-                self.metric_theta_weights(),
-                self._maybe_normalize_generators(self.generators),
-            )
-            diagonal = self.metric_beta * diagonal
+            diagonal = self._compute_metric_diagonal()
             if self.metric_mode == "residual":
                 metrics = torch.diag_embed(1.0 + diagonal)
                 return self._clip_metric_singular_values(metrics)
@@ -441,12 +472,7 @@ class LieGeneratedMetricAttention(nn.Module):
             and self.metric_clip_min is None
             and self.metric_clip_max is None
         ):
-            diagonal = torch.einsum(
-                "hm,md->hd",
-                self.metric_theta_weights(),
-                self._maybe_normalize_generators(self.generators),
-            )
-            diagonal = self.metric_beta * diagonal
+            diagonal = self._compute_metric_diagonal()
             if self.metric_mode == "residual":
                 scale = 1.0 + diagonal
             elif self.metric_mode == "quadratic":

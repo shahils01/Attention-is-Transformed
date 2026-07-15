@@ -79,10 +79,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--theta_init_scale", type=float, default=0.02)
     parser.add_argument("--generator_init_scale", type=float, default=0.02)
     parser.add_argument(
+        "--stabilize_generators",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Make dense metric and Lie-value generator bases trace zero.",
+    )
+    parser.add_argument(
         "--normalize_generators",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Normalize each metric and Lie-value generator to unit Frobenius norm.",
+    )
+    parser.add_argument(
+        "--head_generator_symmetric_cap",
+        type=float,
+        default=None,
+        help=(
+            "Optional Frobenius-norm cap on sym(A_h) before constructing the metric. "
+            "For exp metrics, log(C) guarantees singular values in [1/C, C]."
+        ),
     )
     parser.add_argument("--base_dim", type=int, default=None)
     parser.add_argument("--value_dim", type=int, default=None)
@@ -237,7 +252,9 @@ def make_config(args: argparse.Namespace) -> VLAPolicyConfig:
         generator_type=args.generator_type,
         theta_init_scale=args.theta_init_scale,
         generator_init_scale=args.generator_init_scale,
+        stabilize_generators=args.stabilize_generators,
         normalize_generators=args.normalize_generators,
+        head_generator_symmetric_cap=args.head_generator_symmetric_cap,
         num_base_heads=num_base_heads,
         base_dim=args.base_dim,
         value_dim=args.value_dim,
@@ -494,6 +511,11 @@ def load_checkpoint(
 
 def main() -> None:
     args = parse_args()
+    if (
+        args.head_generator_symmetric_cap is not None
+        and args.head_generator_symmetric_cap <= 0
+    ):
+        raise SystemExit("--head_generator_symmetric_cap must be positive")
     distributed, rank, local_rank, world_size, device = setup_distributed(args)
     torch.manual_seed(args.seed + rank)
     np_seed = args.seed % (2**32)

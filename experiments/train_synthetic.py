@@ -74,10 +74,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generator_type", choices=["full", "diagonal", "symmetric"], default="full")
     parser.add_argument("--num_generators", type=int, default=2)
     parser.add_argument(
+        "--stabilize_generators",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Make dense metric and Lie-value generator bases trace zero.",
+    )
+    parser.add_argument(
         "--normalize_generators",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Normalize each metric and Lie-value generator to unit Frobenius norm.",
+    )
+    parser.add_argument(
+        "--head_generator_symmetric_cap",
+        type=float,
+        default=None,
+        help=(
+            "Optional Frobenius-norm cap on sym(A_h) before constructing the metric. "
+            "For exp metrics, log(C) guarantees singular values in [1/C, C]."
+        ),
     )
     parser.add_argument("--base_dim", type=int, default=None)
     parser.add_argument("--value_dim", type=int, default=None)
@@ -231,7 +246,9 @@ def effective_attention_config(module) -> dict[str, object]:
         "generated_heads_per_base",
         "num_generators",
         "generator_type",
+        "stabilize_generators",
         "normalize_generators",
+        "head_generator_symmetric_cap",
         "metric_mode",
         "metric_beta",
         "metric_clip_min",
@@ -465,6 +482,11 @@ def main() -> None:
     if args.metric_clip_min is not None and args.metric_clip_min < 0:
         raise SystemExit("--metric_clip_min must be non-negative")
     if (
+        args.head_generator_symmetric_cap is not None
+        and args.head_generator_symmetric_cap <= 0
+    ):
+        raise SystemExit("--head_generator_symmetric_cap must be positive")
+    if (
         args.metric_clip_min is not None
         and args.metric_clip_max is not None
         and args.metric_clip_min > args.metric_clip_max
@@ -489,7 +511,9 @@ def main() -> None:
         causal=args.causal,
         theta_init_scale=args.theta_init_scale,
         generator_init_scale=args.generator_init_scale,
+        stabilize_generators=args.stabilize_generators,
         normalize_generators=args.normalize_generators,
+        head_generator_symmetric_cap=args.head_generator_symmetric_cap,
         base_dim=args.base_dim,
         value_dim=args.value_dim,
         metric_mode=args.metric_mode,
@@ -595,7 +619,9 @@ def main() -> None:
         "causal": args.causal,
         "theta_init_scale": args.theta_init_scale,
         "generator_init_scale": args.generator_init_scale,
+        "stabilize_generators": args.stabilize_generators,
         "normalize_generators": args.normalize_generators,
+        "head_generator_symmetric_cap": args.head_generator_symmetric_cap,
         "base_dim": args.base_dim,
         "value_dim": args.value_dim,
         "num_base_heads": args.num_base_heads,

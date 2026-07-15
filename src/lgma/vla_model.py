@@ -44,7 +44,9 @@ class VLAPolicyConfig:
     generator_type: str = "full"
     theta_init_scale: float = 0.02
     generator_init_scale: float = 0.02
+    stabilize_generators: bool = True
     normalize_generators: bool = False
+    head_generator_symmetric_cap: float | None = None
     num_base_heads: int = 1
     base_dim: int | None = None
     value_dim: int | None = None
@@ -176,7 +178,9 @@ class VLATransformerPolicy(nn.Module):
                     causal=False,
                     theta_init_scale=config.theta_init_scale,
                     generator_init_scale=config.generator_init_scale,
+                    stabilize_generators=config.stabilize_generators,
                     normalize_generators=config.normalize_generators,
+                    head_generator_symmetric_cap=config.head_generator_symmetric_cap,
                     base_dim=config.base_dim,
                     value_dim=config.value_dim,
                     value_beta=config.value_beta,

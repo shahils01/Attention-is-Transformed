@@ -74,6 +74,22 @@ By default, the metric-diversity regularizer compares metric deviations
 `M_h - I`, not full `M_h`, because full-metric cosine is dominated by the
 shared identity component early in training.
 
+For exponential metrics, an optional SVD-free stability cap bounds the
+Frobenius norm of the symmetric part of each combined head generator `A_h`.
+Setting the radius to `log(4)` conservatively bounds metric singular values to
+`[0.25, 4.0]` while leaving the skew-symmetric component unchanged:
+
+```bash
+python experiments/train_tinystories.py \
+  --data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-train.txt \
+  --attention lgma \
+  --head_generator_symmetric_cap 1.38629436112
+```
+
+The existing trace-zero generator stabilizer remains enabled by default. Use
+`--no-stabilize_generators` to disable it for an ablation; the cap and
+trace-zero stabilizer can be enabled independently.
+
 For the first harder controlled benchmark, use `multi_relation`. Position 0 is
 a relation-control token selecting one of four transformations over the rest of
 the sequence: copy, reverse, previous-token lookup, or next-token lookup. The

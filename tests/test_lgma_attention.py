@@ -1,3 +1,5 @@
+import math
+
 import torch
 
 from lgma.attention import LieGeneratedMetricAttention
@@ -684,6 +686,52 @@ def test_metric_singular_value_clipping_bounds_metrics():
     singular_values = torch.linalg.svdvals(layer.compute_metrics())
     assert torch.all(singular_values >= 0.25 - 1e-6)
     assert torch.all(singular_values <= 4.0 + 1e-6)
+
+
+def test_head_generator_symmetric_cap_bounds_exp_metric_without_svd():
+    cap = math.log(4.0)
+    layer = LieGeneratedMetricAttention(
+        8,
+        num_heads=1,
+        head_dim=2,
+        num_generators=1,
+        generator_type="full",
+        stabilize_generators=False,
+        head_generator_symmetric_cap=cap,
+        use_sdpa=False,
+    )
+    layer.theta.data.zero_()
+    layer.generators.data[0] = torch.tensor([[8.0, 20.0], [-12.0, -6.0]])
+
+    head_generator = layer.compute_head_generators()[0]
+    symmetric = 0.5 * (head_generator + head_generator.T)
+    assert symmetric.norm() <= cap + 1e-6
+
+    metric = layer.compute_metrics()[0]
+    singular_values = torch.linalg.svdvals(metric)
+    assert singular_values.min() >= 0.25 - 1e-5
+    assert singular_values.max() <= 4.0 + 1e-5
+    assert torch.linalg.det(metric) > 0.0
+
+
+def test_head_generator_symmetric_cap_applies_to_diagonal_fast_path():
+    cap = math.log(4.0)
+    layer = LieGeneratedMetricAttention(
+        8,
+        num_heads=1,
+        head_dim=3,
+        num_generators=1,
+        generator_type="diagonal",
+        head_generator_symmetric_cap=cap,
+        use_sdpa=False,
+    )
+    layer.theta.data.zero_()
+    layer.generators.data[0] = torch.tensor([10.0, -10.0, 5.0])
+
+    assert layer.compute_head_generators()[0].norm() <= cap + 1e-6
+    singular_values = torch.linalg.svdvals(layer.compute_metrics())
+    assert singular_values.min() >= 0.25 - 1e-5
+    assert singular_values.max() <= 4.0 + 1e-5
 
 
 def test_diagonal_metric_clipping_path_matches_dense_scores():

@@ -144,10 +144,25 @@ def parse_args() -> argparse.Namespace:
         help="LGMA generator initialization scale before division by sqrt(head_dim).",
     )
     parser.add_argument(
+        "--stabilize_generators",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Make dense metric and Lie-value generator bases trace zero.",
+    )
+    parser.add_argument(
         "--normalize_generators",
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Normalize each metric and Lie-value generator to unit Frobenius norm.",
+    )
+    parser.add_argument(
+        "--head_generator_symmetric_cap",
+        type=float,
+        default=None,
+        help=(
+            "Optional Frobenius-norm cap on sym(A_h) before constructing the metric. "
+            "For exp metrics, log(C) guarantees singular values in [1/C, C]."
+        ),
     )
     parser.add_argument(
         "--metric_mode",
@@ -372,7 +387,9 @@ def effective_attention_config(module) -> dict[str, object]:
         "generated_heads_per_base",
         "num_generators",
         "generator_type",
+        "stabilize_generators",
         "normalize_generators",
+        "head_generator_symmetric_cap",
         "metric_mode",
         "metric_beta",
         "metric_clip_min",
@@ -406,7 +423,9 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
         "causal": not args.non_causal,
         "theta_init_scale": 0.02,
         "generator_init_scale": 0.02,
+        "stabilize_generators": True,
         "normalize_generators": False,
+        "head_generator_symmetric_cap": None,
         "base_dim": None,
         "value_dim": None,
         "num_base_heads": 1,
@@ -438,7 +457,9 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
         "dropout": args.dropout,
         "theta_init_scale": args.theta_init_scale,
         "generator_init_scale": args.generator_init_scale,
+        "stabilize_generators": args.stabilize_generators,
         "normalize_generators": args.normalize_generators,
+        "head_generator_symmetric_cap": args.head_generator_symmetric_cap,
         "metric_mode": args.metric_mode,
         "metric_beta": args.metric_beta,
         "metric_clip_min": args.metric_clip_min,
@@ -805,6 +826,11 @@ def main() -> None:
         raise SystemExit("--log_every, --eval_every, and --save_every must be non-negative")
     if args.metric_clip_min is not None and args.metric_clip_min < 0:
         raise SystemExit("--metric_clip_min must be non-negative")
+    if (
+        args.head_generator_symmetric_cap is not None
+        and args.head_generator_symmetric_cap <= 0
+    ):
+        raise SystemExit("--head_generator_symmetric_cap must be positive")
     if (
         args.metric_clip_min is not None
         and args.metric_clip_max is not None
