@@ -3,7 +3,7 @@ set -euo pipefail
 
 : "${DATA:?DATA must point to your OSPool data directory}"
 
-BASE_IMAGE="${OSPOOL_BASE_IMAGE:-${DATA}/containers/pytorch-2.9.0-cuda12.6-v1.sif}"
+BASE_IMAGE="${OSPOOL_BASE_IMAGE:-${DATA}/containers/pytorch-2.9.0-cuda12.8-v1.sif}"
 OUTPUT_DIR="${DATA}/dependencies"
 OUTPUT_BUNDLE="${OUTPUT_DIR}/wandb-py311.tar.gz"
 

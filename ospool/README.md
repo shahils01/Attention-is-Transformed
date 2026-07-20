@@ -124,10 +124,14 @@ exit code 85; HTCondor uses that code to transfer its checkpoint and requeue it.
 
 ## Online W&B tracking across checkpoint restarts
 
-W&B is packaged as an OSPool-only dependency bundle, so the base container and
-the Palmetto environment remain unchanged. On AP40, build it once:
+W&B is packaged as an OSPool-only dependency bundle, so the Palmetto
+environment remains unchanged. Build the CUDA 12.8 OSPool container first,
+then build the bundle with that container's Python runtime:
 
 ```bash
+chmod +x ospool/build_universal_gpu_container.sh
+ospool/build_universal_gpu_container.sh
+
 chmod +x ospool/build_wandb_bundle.sh
 ospool/build_wandb_bundle.sh
 ```
@@ -161,7 +165,19 @@ condor_submit ospool/wandb_smoke.sub
 ```
 
 After the CPU-only smoke prints a W&B run URL and exits successfully, submit
-the checkpointed H100/H200 training job:
+the checkpointed training job. To support A100 through B100/B200 with one
+image, first build the CUDA 12.8 container:
+
+```bash
+chmod +x ospool/build_universal_gpu_container.sh
+ospool/build_universal_gpu_container.sh
+```
+
+The W&B submit file accepts compute capabilities 8.0 through 10.0 while keeping
+a 70 GB GPU-memory floor. This includes A100 80 GB, H100/H200, and B100/B200,
+but excludes A100 40 GB and small GPU partitions.
+
+Then submit:
 
 ```bash
 condor_submit -dry-run /tmp/tinystories_hopper_wandb.ad \

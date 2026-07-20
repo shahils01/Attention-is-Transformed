@@ -1,7 +1,7 @@
 # CPU-only test of the W&B package, API key, and worker network connection.
 
 universe = container
-container_image = osdf:///ospool/ap40/data/shahil.shaik/containers/pytorch-2.9.0-cuda12.6-v1.sif
+container_image = osdf:///ospool/ap40/data/shahil.shaik/containers/pytorch-2.9.0-cuda12.8-v1.sif
 
 executable = ospool/run_wandb_smoke.sh
 

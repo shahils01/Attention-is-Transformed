@@ -64,6 +64,9 @@ def test_wandb_submit_enables_online_mode_and_transfers_bundle() -> None:
 
     assert "arguments = online" in submit
     assert "wandb-py311.tar.gz" in submit
+    assert "pytorch-2.9.0-cuda12.8-v1.sif" in submit
+    assert "gpus_minimum_capability = 8.0" in submit
+    assert "gpus_maximum_capability = 10.0" in submit
 
 
 def test_wandb_smoke_does_not_request_a_gpu() -> None:

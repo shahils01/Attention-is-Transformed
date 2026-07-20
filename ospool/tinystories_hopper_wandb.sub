@@ -1,13 +1,13 @@
-# W&B-enabled version of the checkpointed one-GPU H100/H200 job.
+# W&B-enabled one-GPU A100/H100/H200/B100/B200 job.
 # Create ospool/.wandb_api_key and the OSDF W&B bundle before submission.
 
 universe = container
-container_image = osdf:///ospool/ap40/data/shahil.shaik/containers/pytorch-2.9.0-cuda12.6-v1.sif
+container_image = osdf:///ospool/ap40/data/shahil.shaik/containers/pytorch-2.9.0-cuda12.8-v1.sif
 
 executable = ospool/run_tinystories_hopper_checkpointed.sh
 arguments = online
 
-batch_name = tinystories_hopper_wandb_$(Cluster)
+batch_name = tinystories_a100_blackwell_wandb_$(Cluster)
 log = logs/$(batch_name).log
 output = logs/$(batch_name).$(Process).out
 error = logs/$(batch_name).$(Process).err
@@ -25,10 +25,11 @@ request_memory = 32GB
 request_disk = 40GB
 request_gpus = 1
 
-gpus_minimum_capability = 9.0
-gpus_maximum_capability = 9.0
+# A100 is 8.0, Hopper is 9.0, and B100/B200 are 10.0.
+gpus_minimum_capability = 8.0
+gpus_maximum_capability = 10.0
 gpus_minimum_memory = 70000
-gpus_minimum_runtime = 12.6
+gpus_minimum_runtime = 12.8
 
 +JobDurationCategory = "Medium"
 
