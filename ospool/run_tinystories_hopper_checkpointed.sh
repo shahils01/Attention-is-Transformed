@@ -49,6 +49,7 @@ case "${WANDB_MODE}" in
                 exit 2
             fi
             export WANDB_API_KEY
+            echo "Loaded a W&B API key with ${#WANDB_API_KEY} characters"
         fi
 
         wandb_run_id_file="${RESULTS_DIR}/wandb_run_id"

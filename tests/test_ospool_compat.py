@@ -72,3 +72,11 @@ def test_wandb_smoke_does_not_request_a_gpu() -> None:
 
     assert "request_gpus" not in submit
     assert "wandb-py311.tar.gz" in submit
+
+
+def test_wandb_smoke_verifies_authentication_without_printing_key() -> None:
+    root = Path(__file__).resolve().parents[1]
+    wrapper = (root / "ospool" / "run_wandb_smoke.sh").read_text()
+
+    assert "wandb.login(key=os.environ[\"WANDB_API_KEY\"], verify=True)" in wrapper
+    assert "characters" in wrapper
