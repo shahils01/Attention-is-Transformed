@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 
 from lgma.synthetic import CharTokenizer
@@ -38,3 +40,10 @@ def test_compact_batches_are_long_and_shift_targets() -> None:
     assert batch.targets.dtype == torch.long
     assert batch.input_ids.shape == (3, 8)
     assert torch.equal(batch.input_ids[:, 1:], batch.targets[:, :-1])
+
+
+def test_single_gpu_wrapper_uses_an_indexed_cuda_device() -> None:
+    root = Path(__file__).resolve().parents[1]
+    wrapper = (root / "ospool" / "run_tinystories_hopper_checkpointed.sh").read_text()
+
+    assert "--device cuda:0" in wrapper

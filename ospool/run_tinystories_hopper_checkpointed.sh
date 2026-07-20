@@ -82,7 +82,7 @@ timeout --signal=TERM --kill-after=2m "${SEGMENT_DURATION}" \
     python ospool/train_tinystories_compat.py \
       --data_path "${train_path}" \
       --val_data_path "${val_path}" \
-      --device cuda \
+      --device cuda:0 \
       --batch_size 4 \
       --grad_accum_steps 32 \
       --steps 500000 \

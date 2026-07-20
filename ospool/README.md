@@ -107,7 +107,9 @@ condor_watch_q
 
 The default OSPool configuration uses a microbatch of 4, 32 accumulation steps,
 and context length 512, for an effective batch size of 128 on one GPU. W&B is
-disabled by default because the base PyTorch container may not include it.
+disabled by default because the base PyTorch container may not include it. The
+single-process wrapper explicitly selects `cuda:0`; the Palmetto DDP launch is
+not changed.
 
 Useful checkpoint-job commands:
 
