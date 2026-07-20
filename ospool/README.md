@@ -121,3 +121,55 @@ condor_q JOB_ID -better-analyze
 
 Do not remove or manually release a checkpointing job merely because it returns
 exit code 85; HTCondor uses that code to transfer its checkpoint and requeue it.
+
+## Online W&B tracking across checkpoint restarts
+
+W&B is packaged as an OSPool-only dependency bundle, so the base container and
+the Palmetto environment remain unchanged. On AP40, build it once:
+
+```bash
+chmod +x ospool/build_wandb_bundle.sh
+ospool/build_wandb_bundle.sh
+```
+
+The resulting bundle is written to:
+
+```text
+$DATA/dependencies/wandb-py311.tar.gz
+```
+
+Create the secret key file interactively on AP40. Do not paste the key into a
+submit file, commit it, upload it to OSDF, or share it in logs:
+
+```bash
+umask 077
+read -rsp "W&B API key: " WANDB_KEY
+printf '\n'
+printf '%s\n' "${WANDB_KEY}" > ospool/.wandb_api_key
+unset WANDB_KEY
+chmod 600 ospool/.wandb_api_key
+```
+
+The key file is ignored by Git. The W&B submit file transfers the local
+`ospool` directory, including this secret, directly to the private job sandbox.
+
+Validate and submit:
+
+```bash
+chmod +x ospool/run_wandb_smoke.sh
+condor_submit ospool/wandb_smoke.sub
+```
+
+After the CPU-only smoke prints a W&B run URL and exits successfully, submit
+the checkpointed H100/H200 training job:
+
+```bash
+condor_submit -dry-run /tmp/tinystories_hopper_wandb.ad \
+  ospool/tinystories_hopper_wandb.sub
+condor_submit ospool/tinystories_hopper_wandb.sub
+```
+
+The wrapper stores a generated W&B run ID inside `ospool_training_results`,
+which is also the HTCondor checkpoint directory. It exports
+`WANDB_RESUME=allow`, so every four-hour execution segment continues logging to
+the same W&B run instead of creating separate runs.

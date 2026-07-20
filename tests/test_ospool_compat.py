@@ -47,3 +47,28 @@ def test_single_gpu_wrapper_uses_an_indexed_cuda_device() -> None:
     wrapper = (root / "ospool" / "run_tinystories_hopper_checkpointed.sh").read_text()
 
     assert "--device cuda:0" in wrapper
+
+
+def test_wandb_wrapper_preserves_run_id_across_checkpoint_segments() -> None:
+    root = Path(__file__).resolve().parents[1]
+    wrapper = (root / "ospool" / "run_tinystories_hopper_checkpointed.sh").read_text()
+
+    assert "wandb_run_id_file=\"${RESULTS_DIR}/wandb_run_id\"" in wrapper
+    assert "export WANDB_RESUME=allow" in wrapper
+    assert "WANDB_API_KEY" in wrapper
+
+
+def test_wandb_submit_enables_online_mode_and_transfers_bundle() -> None:
+    root = Path(__file__).resolve().parents[1]
+    submit = (root / "ospool" / "tinystories_hopper_wandb.sub").read_text()
+
+    assert "arguments = online" in submit
+    assert "wandb-py311.tar.gz" in submit
+
+
+def test_wandb_smoke_does_not_request_a_gpu() -> None:
+    root = Path(__file__).resolve().parents[1]
+    submit = (root / "ospool" / "wandb_smoke.sub").read_text()
+
+    assert "request_gpus" not in submit
+    assert "wandb-py311.tar.gz" in submit

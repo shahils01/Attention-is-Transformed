@@ -3,7 +3,7 @@ set -euo pipefail
 
 RESULTS_DIR="${OSPOOL_RESULTS_DIR:-ospool_training_results}"
 SEGMENT_DURATION="${OSPOOL_SEGMENT_DURATION:-4h}"
-WANDB_MODE="${WANDB_MODE:-disabled}"
+WANDB_MODE="${1:-${WANDB_MODE:-disabled}}"
 
 export PYTHONUNBUFFERED=1
 
@@ -21,6 +21,55 @@ fi
 
 mkdir -p extracted_data "${RESULTS_DIR}"
 tar -xzf "${archive}" -C extracted_data
+
+case "${WANDB_MODE}" in
+    disabled)
+        echo "W&B tracking is disabled"
+        ;;
+    offline|online)
+        wandb_bundle="$(find . -maxdepth 1 -type f -name 'wandb-py*.tar.gz' -print -quit)"
+        if [[ -z "${wandb_bundle}" ]]; then
+            echo "W&B dependency bundle was not transferred" >&2
+            exit 2
+        fi
+
+        mkdir -p ospool_python_deps
+        tar -xzf "${wandb_bundle}" -C ospool_python_deps
+        export PYTHONPATH="${PWD}/ospool_python_deps/python${PYTHONPATH:+:${PYTHONPATH}}"
+
+        if [[ "${WANDB_MODE}" == "online" ]]; then
+            key_file="ospool/.wandb_api_key"
+            if [[ ! -s "${key_file}" ]]; then
+                echo "W&B API key file was not transferred: ${key_file}" >&2
+                exit 2
+            fi
+            WANDB_API_KEY="$(tr -d '\r\n' < "${key_file}")"
+            if [[ -z "${WANDB_API_KEY}" ]]; then
+                echo "W&B API key file is empty" >&2
+                exit 2
+            fi
+            export WANDB_API_KEY
+        fi
+
+        wandb_run_id_file="${RESULTS_DIR}/wandb_run_id"
+        if [[ ! -s "${wandb_run_id_file}" ]]; then
+            python -c 'import secrets; print(secrets.token_hex(8))' > "${wandb_run_id_file}"
+        fi
+        WANDB_RUN_ID="$(tr -d '\r\n' < "${wandb_run_id_file}")"
+        export WANDB_RUN_ID
+        export WANDB_RESUME=allow
+        export WANDB_CACHE_DIR="${PWD}/${RESULTS_DIR}/.wandb_cache"
+        export WANDB_CONFIG_DIR="${PWD}/${RESULTS_DIR}/.wandb_config"
+        mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_CONFIG_DIR}"
+
+        python -c 'import wandb; print(f"W&B ready: {wandb.__version__}")'
+        echo "W&B mode: ${WANDB_MODE}; resumable run ID: ${WANDB_RUN_ID}"
+        ;;
+    *)
+        echo "Unsupported W&B mode: ${WANDB_MODE}" >&2
+        exit 2
+        ;;
+esac
 
 train_path="$(find extracted_data -type f -name 'TinyStoriesV2-GPT4-train.txt' -print -quit)"
 val_path="$(find extracted_data -type f -name 'TinyStoriesV2-GPT4-valid.txt' -print -quit)"
