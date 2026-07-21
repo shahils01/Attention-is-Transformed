@@ -1,0 +1,35 @@
+universe = container
+
+container_image = osdf:///ospool/ap40/data/shahil.shaik/containers/pytorch-2.9.0-cuda12.6-v1.sif
+executable = ospool/run_tinystories_smoke.sh
+
+batch_name = tinystories_smoke_$(Cluster)
+
+log = logs/tinystories_smoke_$(Cluster).log
+output = logs/tinystories_smoke_$(Cluster).$(Process).out
+error = logs/tinystories_smoke_$(Cluster).$(Process).err
+
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+
+transfer_input_files = \
+    src, \
+    experiments, \
+    osdf:///ospool/ap40/data/shahil.shaik/datasets/tinystory-v1-20260720.tar.gz
+
+transfer_output_files = results
+
+request_cpus = 2
+request_memory = 16GB
+request_disk = 20GB
+request_gpus = 1
+
+gpus_minimum_capability = 7.5
+gpus_minimum_memory = 8GB
+gpus_minimum_runtime = 12.6
+
++JobDurationCategory = "Medium"
+
+on_exit_hold = (ExitBySignal == True) || (ExitCode != 0)
+
+queue 1

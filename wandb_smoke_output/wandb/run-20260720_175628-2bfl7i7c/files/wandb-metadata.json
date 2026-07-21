@@ -1,0 +1,22 @@
+{
+  "os":  "Linux-5.14.0-687.25.1.el9_8.x86_64-x86_64-with-glibc2.35",
+  "python":  "CPython 3.11.14",
+  "startedAt":  "2026-07-20T21:56:28.591259Z",
+  "program":  "<stdin>",
+  "email":  "shahil.shaik7@gmail.com",
+  "root":  "/srv/scratch/wandb_smoke_output",
+  "host":  "iut2-c423.iu.edu",
+  "executable":  "/opt/conda/bin/python",
+  "cpu_count":  48,
+  "cpu_count_logical":  96,
+  "disk":  {
+    "/":  {
+      "total":  "16777216",
+      "used":  "12288"
+    }
+  },
+  "memory":  {
+    "total":  "269357854720"
+  },
+  "writerId":  "qdd4919d3e7ri1e5jfnwa8gmv9r9pz5r"
+}

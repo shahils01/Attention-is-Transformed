@@ -1,0 +1,33 @@
+_wandb:
+    value:
+        cli_version: 0.28.1
+        e:
+            qdd4919d3e7ri1e5jfnwa8gmv9r9pz5r:
+                cpu_count: 48
+                cpu_count_logical: 96
+                disk:
+                    /:
+                        total: "16777216"
+                        used: "12288"
+                email: shahil.shaik7@gmail.com
+                executable: /opt/conda/bin/python
+                host: iut2-c423.iu.edu
+                memory:
+                    total: "269357854720"
+                os: Linux-5.14.0-687.25.1.el9_8.x86_64-x86_64-with-glibc2.35
+                program: <stdin>
+                python: CPython 3.11.14
+                root: /srv/scratch/wandb_smoke_output
+                startedAt: "2026-07-20T21:56:28.591259Z"
+                writerId: qdd4919d3e7ri1e5jfnwa8gmv9r9pz5r
+        m: []
+        python_version: 3.11.14
+        t:
+            "3":
+                - 2
+                - 13
+                - 15
+            "4": 3.11.14
+            "5": 0.28.1
+            "12": 0.28.1
+            "13": linux-x86_64
