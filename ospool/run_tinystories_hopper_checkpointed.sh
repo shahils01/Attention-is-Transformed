@@ -2,7 +2,7 @@
 set -euo pipefail
 
 RESULTS_DIR="${OSPOOL_RESULTS_DIR:-ospool_training_results}"
-SEGMENT_DURATION="${OSPOOL_SEGMENT_DURATION:-4h}"
+SEGMENT_DURATION="${OSPOOL_SEGMENT_DURATION:-10m}"
 WANDB_MODE="${1:-${WANDB_MODE:-disabled}}"
 
 export PYTHONUNBUFFERED=1
@@ -133,12 +133,12 @@ timeout --signal=TERM --kill-after=2m "${SEGMENT_DURATION}" \
       --data_path "${train_path}" \
       --val_data_path "${val_path}" \
       --device cuda:0 \
-      --batch_size 4 \
-      --grad_accum_steps 32 \
+      --batch_size 256 \
+      --grad_accum_steps 8 \
       --steps 500000 \
       --log_every 100 \
       --eval_every 1000 \
-      --save_every 250 \
+      --save_every 100 \
       --output_dir "${RESULTS_DIR}" \
       --diagnostic_every 1000 \
       --diagnostic_batches 2 \
