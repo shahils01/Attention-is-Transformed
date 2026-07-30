@@ -4,6 +4,7 @@ import math
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 from lgma.attention import _negative_large
 
@@ -46,6 +47,63 @@ def _apply_masks(
             key_padding_mask[:, None, None, :].to(scores.device, dtype=torch.bool), neg_large
         )
     return scores
+
+
+def _sdpa_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    dropout_p: float,
+    causal: bool,
+) -> torch.Tensor | None:
+    """Use memory-efficient SDPA when available, otherwise request the explicit path."""
+    if not hasattr(F, "scaled_dot_product_attention"):
+        return None
+    return F.scaled_dot_product_attention(
+        q,
+        k,
+        v,
+        dropout_p=dropout_p,
+        is_causal=causal,
+    )
+
+
+def _grouped_sdpa_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    dropout_p: float,
+    causal: bool,
+) -> torch.Tensor | None:
+    """Use native GQA SDPA when supported, otherwise expand KV only for SDPA."""
+    if not hasattr(F, "scaled_dot_product_attention"):
+        return None
+
+    if q.shape[1] == k.shape[1]:
+        return _sdpa_attention(q, k, v, dropout_p=dropout_p, causal=causal)
+
+    try:
+        return F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout_p=dropout_p,
+            is_causal=causal,
+            enable_gqa=True,
+        )
+    except TypeError:
+        # PyTorch releases before native GQA support still avoid materializing
+        # the quadratic attention-score tensor through this fallback.
+        repeat = q.shape[1] // k.shape[1]
+        return _sdpa_attention(
+            q,
+            k.repeat_interleave(repeat, dim=1),
+            v.repeat_interleave(repeat, dim=1),
+            dropout_p=dropout_p,
+            causal=causal,
+        )
 
 
 class StandardMultiheadAttention(nn.Module):
@@ -100,11 +158,21 @@ class StandardMultiheadAttention(nn.Module):
         k = self.k_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        scores = torch.einsum("bhtd,bhsd->bhts", q, k) / math.sqrt(self.head_dim)
-        scores = _apply_masks(scores, self.causal, attn_mask, key_padding_mask)
-        attn = torch.softmax(scores, dim=-1)
-        attn = self.attn_dropout(attn)
-        out_heads = torch.einsum("bhts,bhsd->bhtd", attn, v)
+        out_heads = None
+        if not need_weights and attn_mask is None and key_padding_mask is None:
+            out_heads = _sdpa_attention(
+                q,
+                k,
+                v,
+                dropout_p=self.dropout if self.training else 0.0,
+                causal=self.causal,
+            )
+        if out_heads is None:
+            scores = torch.einsum("bhtd,bhsd->bhts", q, k) / math.sqrt(self.head_dim)
+            scores = _apply_masks(scores, self.causal, attn_mask, key_padding_mask)
+            attn = torch.softmax(scores, dim=-1)
+            attn = self.attn_dropout(attn)
+            out_heads = torch.einsum("bhts,bhsd->bhtd", attn, v)
         out = out_heads.transpose(1, 2).contiguous().view(batch, seq_len, self.inner_dim)
         out = self.out_proj(out)
         if need_weights:
@@ -218,15 +286,24 @@ class GroupedQueryAttention(nn.Module):
         q = self.q_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        repeat = self.num_heads // self.num_kv_heads
-        k = k.repeat_interleave(repeat, dim=1)
-        v = v.repeat_interleave(repeat, dim=1)
-
-        scores = torch.einsum("bhtd,bhsd->bhts", q, k) / math.sqrt(self.head_dim)
-        scores = _apply_masks(scores, self.causal, attn_mask, key_padding_mask)
-        attn = torch.softmax(scores, dim=-1)
-        attn = self.attn_dropout(attn)
-        out_heads = torch.einsum("bhts,bhsd->bhtd", attn, v)
+        out_heads = None
+        if not need_weights and attn_mask is None and key_padding_mask is None:
+            out_heads = _grouped_sdpa_attention(
+                q,
+                k,
+                v,
+                dropout_p=self.dropout if self.training else 0.0,
+                causal=self.causal,
+            )
+        if out_heads is None:
+            repeat = self.num_heads // self.num_kv_heads
+            k = k.repeat_interleave(repeat, dim=1)
+            v = v.repeat_interleave(repeat, dim=1)
+            scores = torch.einsum("bhtd,bhsd->bhts", q, k) / math.sqrt(self.head_dim)
+            scores = _apply_masks(scores, self.causal, attn_mask, key_padding_mask)
+            attn = torch.softmax(scores, dim=-1)
+            attn = self.attn_dropout(attn)
+            out_heads = torch.einsum("bhts,bhsd->bhtd", attn, v)
         out = out_heads.transpose(1, 2).contiguous().view(batch, seq_len, self.inner_dim)
         out = self.out_proj(out)
         if need_weights:

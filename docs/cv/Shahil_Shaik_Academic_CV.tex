@@ -1,0 +1,213 @@
+\documentclass[10pt,letterpaper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage[letterpaper,top=0.68in,bottom=0.62in,left=0.78in,right=0.78in]{geometry}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+
+\definecolor{navy}{HTML}{183756}
+\definecolor{accent}{HTML}{2E74B5}
+\definecolor{muted}{HTML}{5B656F}
+\definecolor{rulegray}{HTML}{DADFE5}
+\definecolor{ink}{HTML}{1C2126}
+
+\hypersetup{
+  colorlinks=true,
+  urlcolor=accent,
+  linkcolor=accent,
+  pdfauthor={Shahil Shaik},
+  pdftitle={Shahil Shaik --- Academic CV},
+  pdfsubject={Academic CV for research computing allocation applications},
+  pdfkeywords={robotics, reinforcement learning, transformers, VLA, multi-agent systems}
+}
+\urlstyle{same}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\fancyhead[R]{\color{muted}\fontsize{8}{9}\selectfont\bfseries SHAHIL SHAIK \enspace|\enspace ACADEMIC CV}
+\fancyfoot[C]{\color{muted}\fontsize{8.5}{10}\selectfont Shahil Shaik \enspace$\bullet$\enspace Page \thepage\ of \pageref*{LastPage}}
+\setlength{\headheight}{12pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+\setlength{\emergencystretch}{3em}
+\raggedbottom
+\color{ink}
+
+\newcommand{\cvsection}[1]{%
+  \vspace{7pt}%
+  {\color{navy}\fontsize{10.5}{12}\selectfont\bfseries\MakeUppercase{#1}}\par
+  \vspace{2pt}\color{rulegray}\hrule height 0.55pt\color{ink}\vspace{4pt}
+}
+
+\newcommand{\researchentry}[3]{%
+  {\color{navy}\bfseries #1}%
+  {\color{muted}\enspace|\enspace\itshape #2}\par
+  \vspace{1pt}#3\par\vspace{4pt}
+}
+
+\newcommand{\pubentry}[4]{%
+  \hangindent=0.18in\hangafter=1
+  #1 (#2). \textit{#3}. #4\par\vspace{5pt}
+}
+
+\newcommand{\skillrow}[2]{%
+  {\color{navy}\bfseries #1} & #2\\[2.5pt]
+}
+
+\begin{document}
+\raggedright
+
+\begin{center}
+  {\color{navy}\fontsize{22}{25}\selectfont\bfseries SHAHIL SHAIK}\par
+  \vspace{4pt}
+  {\color{muted}\fontsize{11.5}{14}\selectfont\bfseries
+    Ph.D. Candidate in Mechanical Engineering \enspace|\enspace Robotics and Intelligent Systems}\par
+  \vspace{5pt}
+  {\fontsize{9.6}{11.5}\selectfont
+    Clemson University
+    \enspace$\bullet$\enspace
+    \href{mailto:shahils@clemson.edu}{shahils@clemson.edu}
+    \enspace$\bullet$\enspace
+    \href{https://scholar.google.com/citations?user=THKUDwwAAAAJ&hl=en}{Google Scholar}
+    \enspace$\bullet$\enspace
+    \href{https://github.com/shahils01}{GitHub}}
+\end{center}
+\vspace{-1pt}
+
+\cvsection{Research Profile}
+Ph.D. candidate and Graduate Research Assistant developing efficient learning architectures
+for embodied and multi-agent intelligence. Research spans transformer attention,
+vision-language and vision-language-action models, multi-agent deep reinforcement learning,
+distributional policy optimization, and shared human--robot control. Published in the
+American Control Conference and \textit{IET Cyber-Systems and Robotics}; experienced in
+reproducible, GPU-accelerated research with PyTorch.
+
+\cvsection{Education}
+\begin{tabularx}{\textwidth}{@{}>{\color{muted}\bfseries}p{1.25in}X@{}}
+2021--Present &
+  {\color{navy}\bfseries Ph.D. in Mechanical Engineering (Robotics)}\\[-1pt]
+& Clemson University, Clemson, South Carolina\\[-1pt]
+& {\color{muted}\small Expected graduation: August 2027. Research focus: intelligent multi-agent robotic systems and learning-based autonomy.}\\[5pt]
+2019--2021 &
+  {\color{navy}\bfseries Graduate Study in Mechanical Engineering}\\[-1pt]
+& Clemson University, Clemson, South Carolina\\[-1pt]
+& {\color{muted}\small Entered the M.S. program in 2019 and transitioned to the Ph.D. program in 2021.}\\[5pt]
+2015--2019 &
+  {\color{navy}\bfseries Bachelor's Degree in Mechanical Engineering}\\[-1pt]
+& Anil Neerukonda Institute of Technology and Sciences, Visakhapatnam, India\\[-1pt]
+& {\color{muted}\small GPA: 8.55/10.}
+\end{tabularx}
+
+\cvsection{Academic Appointment}
+\begin{tabularx}{\textwidth}{@{}>{\color{muted}\bfseries}p{1.25in}X@{}}
+Current &
+  {\color{navy}\bfseries Graduate Research Assistant, Department of Mechanical Engineering}\\[-1pt]
+& Clemson University, Clemson, South Carolina\\[-1pt]
+& {\color{muted}\small Faculty advisor: Dr. Yue Wang.}
+\end{tabularx}
+
+\cvsection{Research Interests}
+Efficient transformer architectures \enspace$\bullet$\enspace
+Vision-language-action learning \enspace$\bullet$\enspace
+Multi-agent reinforcement learning \enspace$\bullet$\enspace
+Robot learning \enspace$\bullet$\enspace
+Human--robot shared control \enspace$\bullet$\enspace
+Distributed and memory-efficient deep learning
+
+\cvsection{Selected Research}
+\researchentry
+  {Lie-Generated Metric Attention (LGMA)}
+  {Lead developer and investigator}
+  {Developing a PyTorch attention architecture that generates head-specific metrics from
+  shared Lie-algebra generators to reduce parameter and key--value cache costs. Built
+  controlled MHA-versus-LGMA experiments, stability diagnostics, checkpointing, efficiency
+  accounting, and single-/multi-GPU training workflows for TinyStories and robot-learning studies.}
+
+\researchentry
+  {Vision-Language(-Action) Models for Multi-Agent Robotics}
+  {Research and software development}
+  {Investigating multimodal critics and action models for policy evaluation and robot learning,
+  including MA-VLCM and planned LIBERO benchmarking. Work integrates visual observations,
+  language-conditioned reasoning, temporal context, and multi-agent state representations.}
+
+\researchentry
+  {Multi-Agent Deep Reinforcement Learning}
+  {Doctoral research}
+  {Developed methods for learning under constrained inter-agent communication and studied
+  distributional policy-gradient estimation. Research emphasizes coordination, robustness,
+  sample efficiency, and principled evaluation across multi-agent settings.}
+
+\researchentry
+  {Shared Control of Mobile Robots}
+  {Collaborative research}
+  {Studied deep reinforcement-learning approaches that combine human guidance with autonomous
+  control for mobile robot navigation, resulting in a peer-reviewed journal publication.}
+
+\newpage
+
+\cvsection{Publications and Preprints}
+\pubentry
+  {\textbf{\color{navy}Shaik, S.}, Smereka, J.~M., \& Wang, Y.}
+  {2026}
+  {Multi-Agent Deep Reinforcement Learning Under Constrained Communications}
+  {arXiv preprint arXiv:2601.17069.}
+
+\pubentry
+  {\textbf{\color{navy}Shaik, S.}, Parameshwaran, A., Nayak, A., Smereka, J.~M., \& Wang, Y.}
+  {2026}
+  {MA-VLCM: A Vision Language Critic Model for Value Estimation of Policies in Multi-Agent Team Settings}
+  {arXiv preprint arXiv:2603.15418.}
+
+\pubentry
+  {Nayak, A., \textbf{\color{navy}Shaik, S.}, \& Wang, Y.}
+  {2026}
+  {Belief-Aware VLM Model for Human-like Reasoning}
+  {arXiv preprint arXiv:2604.09686.}
+
+\pubentry
+  {\textbf{\color{navy}Shaik, S.}, Smereka, J.~M., \& Wang, Y.}
+  {2025}
+  {Generalized Advantage Estimation for Distributional Policy Gradients}
+  {Proceedings of the American Control Conference, 3073--3078.}
+
+\pubentry
+  {Tian, C., \textbf{\color{navy}Shaik, S.}, \& Wang, Y.}
+  {2021}
+  {Deep Reinforcement Learning for Shared Control of Mobile Robots}
+  {\textit{IET Cyber-Systems and Robotics}, 3(4), 315--330.}
+
+\cvsection{Research Software and Reproducibility}
+{\color{navy}\bfseries Open-source LGMA implementation.}
+Maintains a public PyTorch research prototype with interchangeable LGMA and conventional
+multi-head attention, synthetic and TinyStories experiments, and VLA
+data/model/evaluation modules.
+\href{https://github.com/shahils01/Attention-is-Transformed}{Repository}\par\vspace{5pt}
+
+{\color{navy}\bfseries Experiment integrity.}
+Built unit and smoke tests, configuration-driven experiments, resumable checkpoints,
+validation workflows, per-GPU throughput and memory accounting, and automated summaries
+for validation-loss-versus-token and validation-loss-versus-GPU-hour comparisons.\par\vspace{5pt}
+
+{\color{navy}\bfseries Research-computing readiness.}
+Prepared bf16 CUDA training, gradient accumulation, single- and multi-GPU
+DistributedDataParallel execution, Slurm launch patterns, dataset staging, and portable
+Conda/Apptainer environment plans for accelerator-based studies.
+
+\cvsection{Technical Skills}
+\begin{tabularx}{\textwidth}{@{}p{1.48in}X@{}}
+\skillrow{Programming}{Python; scientific computing and research software development}
+\skillrow{Deep Learning}{PyTorch; transformer models; attention mechanisms; reinforcement learning; VLM/VLA}
+\skillrow{GPU \& Scale}{CUDA; bf16 mixed precision; PyTorch DistributedDataParallel; torchrun; Slurm}
+\skillrow{Research Stack}{Hugging Face Datasets/Transformers; NumPy; h5py; OpenCV; Weights \& Biases}
+\skillrow{Robotics \& Tools}{MuJoCo/LIBERO workflows; Git/GitHub; Conda; Apptainer; pytest}
+\end{tabularx}
+
+\end{document}
