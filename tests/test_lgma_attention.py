@@ -142,6 +142,29 @@ def test_identity_collapse_gives_identical_attention_maps():
         assert torch.allclose(attn[:, 0], attn[:, head], atol=1e-6)
 
 
+def test_pre_cap_symmetric_norms_identify_clipped_heads():
+    layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        num_generators=1,
+        head_generator_symmetric_cap=1.0,
+        stabilize_generators=False,
+        use_sdpa=False,
+    )
+    layer.generators.data.copy_(2.0 * torch.eye(4).unsqueeze(0))
+
+    pre_cap_norms = layer.pre_cap_head_generator_symmetric_norms()
+    capped = layer.compute_head_generators()
+    capped_symmetric_norms = (
+        0.5 * (capped + capped.transpose(-1, -2))
+    ).float().norm(dim=(-2, -1))
+
+    assert pre_cap_norms is not None
+    assert torch.all(pre_cap_norms > 1.0)
+    assert torch.allclose(capped_symmetric_norms, torch.ones(2), atol=1e-6)
+
+
 def test_residual_metric_mode_returns_identity_plus_delta():
     torch.manual_seed(0)
     layer = LieGeneratedMetricAttention(

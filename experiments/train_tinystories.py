@@ -672,6 +672,34 @@ def add_attention_diagnostics(
             ah_norms = ah.float().reshape(ah.shape[0], -1).norm(dim=-1)
             report["ah_fro_norm_mean"] = float(ah_norms.mean())
             report["ah_fro_norm_max"] = float(ah_norms.max())
+            cap_norms = []
+            cap_active = []
+            for module in model.modules():
+                if not isinstance(module, LieGeneratedMetricAttention):
+                    continue
+                pre_cap_norms = module.pre_cap_head_generator_symmetric_norms()
+                if pre_cap_norms is None:
+                    continue
+                cap_norms.append(pre_cap_norms)
+                cap_active.append(pre_cap_norms > module.head_generator_symmetric_cap)
+            if cap_norms:
+                all_pre_cap_norms = torch.cat(cap_norms)
+                all_cap_active = torch.cat(cap_active)
+                report["head_generator_symmetric_pre_cap_norm_mean"] = float(
+                    all_pre_cap_norms.mean()
+                )
+                report["head_generator_symmetric_pre_cap_norm_max"] = float(
+                    all_pre_cap_norms.max()
+                )
+                report["head_generator_symmetric_cap_active_fraction"] = float(
+                    all_cap_active.float().mean()
+                )
+                report["head_generator_symmetric_cap_active_heads"] = int(
+                    all_cap_active.sum()
+                )
+                report["head_generator_symmetric_cap_total_heads"] = int(
+                    all_cap_active.numel()
+                )
             induced_similarity = induced_metric_cosine_similarity(first_attn, metrics)
             report["induced_metric_diversity_mean_cosine"] = float(induced_similarity.mean())
             report["induced_metric_diversity_offdiag_mean_cosine"] = float(

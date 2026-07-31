@@ -315,6 +315,28 @@ class LieGeneratedMetricAttention(nn.Module):
         scale = (self.head_generator_symmetric_cap / norms.clamp_min(1e-8)).clamp(max=1.0)
         return skew + symmetric * scale.to(dtype=head_generators.dtype)
 
+    def pre_cap_head_generator_symmetric_norms(self) -> torch.Tensor | None:
+        """Return per-head symmetric norms before applying the configured cap."""
+        if self.head_generator_symmetric_cap is None or self.metric_mode == "unconstrained":
+            return None
+        if self.generator_type == "diagonal":
+            diagonal = torch.einsum(
+                "hm,md->hd",
+                self.metric_theta_weights(),
+                self._maybe_normalize_generators(self.generators),
+            )
+            return (self.metric_beta * diagonal).float().norm(dim=-1)
+
+        generators = self._dense_generators()
+        head_generators = torch.einsum("hm,mde->hde", self.metric_theta_weights(), generators)
+        head_generators = self.metric_beta * head_generators
+        if self.generator_type == "symmetric":
+            head_generators = 0.5 * (
+                head_generators + head_generators.transpose(-1, -2)
+            )
+        symmetric = 0.5 * (head_generators + head_generators.transpose(-1, -2))
+        return symmetric.float().norm(dim=(-2, -1))
+
     def metric_theta_weights(self) -> torch.Tensor:
         """Return simplex-normalized generator weights for each metric head."""
         if not hasattr(self, "theta"):

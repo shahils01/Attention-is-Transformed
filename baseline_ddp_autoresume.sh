@@ -1,9 +1,7 @@
 #!/bin/bash
 
-# Run continuously across 12-hour allocations.  Slurm sends USR1 to this batch
-# shell five minutes before the wall-time limit; the handler stops torchrun and
-# requeues the job.  The next allocation resumes the newest completed checkpoint.
-#SBATCH --job-name=lgma_b4h16
+# Usage: sbatch baseline_ddp_autoresume.sh {mha|mqa|gqa}
+# The job requeues before each 12-hour limit and resumes the newest checkpoint.
 #SBATCH --nodes=1
 #SBATCH --tasks-per-node=1
 #SBATCH --cpus-per-task=4
@@ -14,16 +12,30 @@
 #SBATCH --signal=B:USR1@300
 #SBATCH --open-mode=append
 
+ATTENTION="${1:-}"
+case "$ATTENTION" in
+  mha|mqa)
+    ATTENTION_ARGS=()
+    ;;
+  gqa)
+    # Four KV heads for sixteen query heads, matching the trainer default explicitly.
+    ATTENTION_ARGS=(--num_kv_heads 4)
+    ;;
+  *)
+    echo "Usage: sbatch $0 {mha|mqa|gqa}" >&2
+    exit 2
+    ;;
+esac
+
 # Slurm batch shells launched through non-interactive SSH do not inherit the
 # shell function that provides `module`, so initialize it explicitly.
 source /etc/profile.d/modules.sh
 module load anaconda3
 source activate llava_video
 set -uo pipefail
-
 cd /home/shahils/Desktop/gitBackupRepo/Attention-is-Transformed/
 
-OUTPUT_DIR=/scratch/shahils/lgma_runs/large_tinystories_lgma_b4_h16_g8_beta1_softmax_h200_4
+OUTPUT_DIR="/scratch/shahils/lgma_runs/large_tinystories_${ATTENTION}_b128_h16_h200_4"
 KEEP_CHECKPOINTS=3
 mkdir -p "$OUTPUT_DIR"
 
@@ -44,9 +56,6 @@ prune_old_checkpoints() {
   fi
 }
 
-# A checkpoint is only considered after torch.save has returned. Choosing the
-# newest file by mtime also means an interrupted write is retained alongside two
-# older completed checkpoints, rather than becoming the only recovery point.
 LATEST_CHECKPOINT="$(
   find "$OUTPUT_DIR" -maxdepth 1 -type f -name 'checkpoint_step_*.pt' -printf '%T@:%p\n' 2>/dev/null \
     | sort -t: -k1,1nr \
@@ -80,8 +89,8 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
   --data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-train.txt \
   --val_data_path /scratch/shahils/lgma_data/tinystory/TinyStoriesV2-GPT4-valid.txt \
   --device cuda \
-  --batch_size 256 \
-  --grad_accum_steps 2 \
+  --batch_size 128 \
+  --grad_accum_steps 4 \
   --steps 500000 \
   --log_every 100 \
   --eval_every 1000 \
@@ -90,21 +99,12 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
   --diagnostic_every 1000 \
   --diagnostic_batches 2 \
   --wandb_project lgma \
-  --wandb_run_name tinystory_lgma_multibase_b4_h16_ospool \
-  --wandb_group tinystories \
-  --wandb_tags tinystory,lgma,ValueLie,multibase,b4,h16,ospool \
-  --induced_metric_diversity_weight 0.0 \
-  --metric_diversity_weight 0.0 \
+  --wandb_run_name "tinystory_${ATTENTION}_b128_h200" \
+  --wandb_group tinystories_baselines \
+  --wandb_tags tinystory,"$ATTENTION",baseline,b128,h16,h200,sdpa \
   --d_model 1024 \
   --num_layers 12 \
   --head_dim 64 \
-  --base_dim 64 \
-  --value_dim 64 \
-  --num_generators 8 \
-  --metric_beta 1.0 \
-  --value_beta 1.0 \
-  --head_generator_symmetric_cap 6.0 \
-  --no-stabilize_generators \
   --context_length 512 \
   --dropout 0.1 \
   --lr 3e-4 \
@@ -114,10 +114,9 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
   --min_lr 1e-4 \
   --weight_decay 0.01 \
   --precision bf16 \
-  --attention lgma_multibase \
+  --attention "$ATTENTION" \
   --num_heads 16 \
-  --num_base_heads 4 \
-  --value_transform lie \
+  "${ATTENTION_ARGS[@]}" \
   "${RESUME_ARGS[@]}" &
 
 TRAIN_PID=$!

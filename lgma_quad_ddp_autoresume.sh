@@ -1,9 +1,7 @@
 #!/bin/bash
 
-# Run continuously across 12-hour allocations.  Slurm sends USR1 to this batch
-# shell five minutes before the wall-time limit; the handler stops torchrun and
-# requeues the job.  The next allocation resumes the newest completed checkpoint.
-#SBATCH --job-name=lgma_b4h16
+# Run LGMA's quadratic metric approximation continuously across 12-hour allocations.
+#SBATCH --job-name=lgma_quad_b4h16
 #SBATCH --nodes=1
 #SBATCH --tasks-per-node=1
 #SBATCH --cpus-per-task=4
@@ -23,7 +21,7 @@ set -uo pipefail
 
 cd /home/shahils/Desktop/gitBackupRepo/Attention-is-Transformed/
 
-OUTPUT_DIR=/scratch/shahils/lgma_runs/large_tinystories_lgma_b4_h16_g8_beta1_softmax_h200_4
+OUTPUT_DIR=/scratch/shahils/lgma_runs/large_tinystories_lgma_quad_b4_h16_h200_4
 KEEP_CHECKPOINTS=3
 mkdir -p "$OUTPUT_DIR"
 
@@ -44,9 +42,6 @@ prune_old_checkpoints() {
   fi
 }
 
-# A checkpoint is only considered after torch.save has returned. Choosing the
-# newest file by mtime also means an interrupted write is retained alongside two
-# older completed checkpoints, rather than becoming the only recovery point.
 LATEST_CHECKPOINT="$(
   find "$OUTPUT_DIR" -maxdepth 1 -type f -name 'checkpoint_step_*.pt' -printf '%T@:%p\n' 2>/dev/null \
     | sort -t: -k1,1nr \
@@ -90,9 +85,9 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
   --diagnostic_every 1000 \
   --diagnostic_batches 2 \
   --wandb_project lgma \
-  --wandb_run_name tinystory_lgma_multibase_b4_h16_ospool \
+  --wandb_run_name tinystory_lgma_quad_b4_h16_h200 \
   --wandb_group tinystories \
-  --wandb_tags tinystory,lgma,ValueLie,multibase,b4,h16,ospool \
+  --wandb_tags tinystory,lgma,quad,ValueLie,multibase,b4,h16,h200 \
   --induced_metric_diversity_weight 0.0 \
   --metric_diversity_weight 0.0 \
   --d_model 1024 \
@@ -114,7 +109,7 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
   --min_lr 1e-4 \
   --weight_decay 0.01 \
   --precision bf16 \
-  --attention lgma_multibase \
+  --attention lgma_quad \
   --num_heads 16 \
   --num_base_heads 4 \
   --value_transform lie \
