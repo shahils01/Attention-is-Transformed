@@ -135,6 +135,57 @@ def test_tinystories_generator_stability_flags_are_configurable():
     )
 
 
+def test_zero_ah_norm_weight_skips_lgma_generator_work(monkeypatch):
+    import sys
+
+    sys.path.insert(0, str(ROOT / "experiments"))
+    import train_tinystories
+
+    model = TinyTransformerLM(
+        vocab_size=16,
+        d_model=32,
+        num_layers=1,
+        num_heads=2,
+        head_dim=8,
+        attention_type="lgma",
+        num_generators=2,
+        context_length=8,
+    )
+
+    def unexpected_generator_work():
+        raise AssertionError("zero-weight A_h regularization must not build generators")
+
+    monkeypatch.setattr(
+        model.first_attention,
+        "compute_head_generators",
+        unexpected_generator_work,
+    )
+    regularizer = train_tinystories.compute_ah_norm_regularizer(
+        model,
+        ah_norm_weight=0.0,
+        ah_norm_max=0.0,
+        device=torch.device("cpu"),
+    )
+
+    assert regularizer.item() == 0.0
+    assert not regularizer.requires_grad
+
+    def unexpected_module_scan():
+        raise AssertionError("zero-weight diversity regularization must not scan the model")
+
+    monkeypatch.setattr(model, "modules", unexpected_module_scan)
+    metric_loss, induced_loss = train_tinystories.compute_diversity_regularizers(
+        model,
+        metric_weight=0.0,
+        induced_weight=0.0,
+        squared=False,
+        use_delta=True,
+        device=torch.device("cpu"),
+    )
+    assert metric_loss.item() == 0.0
+    assert induced_loss.item() == 0.0
+
+
 def test_tiny_lm_forward_loss_for_attention_variants():
     torch.manual_seed(0)
     for attention_type in (
@@ -248,6 +299,71 @@ def test_train_tinystories_smoke_runs_for_one_step(tmp_path):
         train_tinystories.main()
     finally:
         sys.argv = old_argv
+
+
+def test_train_tinystories_checkpoint_resumes_after_logging_optimizations(tmp_path):
+    import sys
+
+    data_path = tmp_path / "tiny.txt"
+    data_path.write_text(
+        "once upon a time there was a small model. " * 20,
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "run"
+
+    sys.path.insert(0, str(ROOT / "experiments"))
+    import train_tinystories
+
+    common_args = [
+        "train_tinystories.py",
+        "--data_path",
+        str(data_path),
+        "--attention",
+        "lgma",
+        "--batch_size",
+        "2",
+        "--eval_batches",
+        "1",
+        "--context_length",
+        "8",
+        "--d_model",
+        "32",
+        "--num_layers",
+        "1",
+        "--num_heads",
+        "2",
+        "--head_dim",
+        "8",
+        "--num_generators",
+        "2",
+        "--output_dir",
+        str(output_dir),
+        "--save_every",
+        "1",
+        "--diagnostic_batches",
+        "1",
+    ]
+
+    old_argv = sys.argv
+    try:
+        sys.argv = [*common_args, "--steps", "1"]
+        train_tinystories.main()
+        checkpoint = output_dir / "checkpoint_step_1.pt"
+        assert checkpoint.exists()
+
+        sys.argv = [
+            *common_args,
+            "--steps",
+            "2",
+            "--resume_checkpoint",
+            str(checkpoint),
+        ]
+        train_tinystories.main()
+    finally:
+        sys.argv = old_argv
+
+    resumed = torch.load(output_dir / "checkpoint_step_2.pt", map_location="cpu")
+    assert resumed["step"] == 2
 
 
 def test_tinystories_eval_and_generation_helpers_load_checkpoint(tmp_path):

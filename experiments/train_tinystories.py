@@ -513,6 +513,9 @@ def compute_diversity_regularizers(
     use_delta: bool,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if metric_weight == 0.0 and induced_weight == 0.0:
+        zero = torch.zeros((), device=device)
+        return zero, zero
     lgma_layers = [
         module for module in model.modules() if isinstance(module, LieGeneratedMetricAttention)
     ]
@@ -548,9 +551,12 @@ def compute_diversity_regularizers(
 
 def compute_ah_norm_regularizer(
     model: TinyTransformerLM,
+    ah_norm_weight: float,
     ah_norm_max: float,
     device: torch.device,
 ) -> torch.Tensor:
+    if ah_norm_weight == 0.0:
+        return torch.zeros((), device=device)
     lgma_layers = [
         module for module in model.modules() if isinstance(module, LieGeneratedMetricAttention)
     ]
@@ -883,9 +889,6 @@ def main() -> None:
         if device.type == "cuda":
             torch.cuda.set_device(device)
             torch.backends.cuda.matmul.allow_tf32 = True
-        if args.compile and ddp_enabled:
-            raise SystemExit("--compile is not enabled for DDP in this runner")
-
         train_text = Path(args.data_path).read_text(encoding="utf-8")
         val_text = (
             Path(args.val_data_path).read_text(encoding="utf-8")
@@ -900,9 +903,12 @@ def main() -> None:
         seq_len = int(config["context_length"])
         base_model = TinyTransformerLM(vocab_size=tokenizer.vocab_size, **config).to(device)
         if args.compile:
-            if not hasattr(torch, "compile"):
+            if not hasattr(base_model, "compile"):
                 raise SystemExit("--compile requires a PyTorch version with torch.compile")
-            base_model = torch.compile(base_model)
+            # Compile the inner module in place so DDP and checkpoint state_dict keys
+            # continue to refer to the original model rather than an OptimizedModule
+            # wrapper (which prefixes parameters with `_orig_mod`).
+            base_model.compile()
         if ddp_enabled:
             model = DistributedDataParallel(
                 base_model,
@@ -979,6 +985,11 @@ def main() -> None:
 
         for step_idx in range(start_step, args.steps):
             step = step_idx + 1
+            should_log = args.log_every > 0 and (step == 1 or step % args.log_every == 0)
+            should_eval = args.eval_every > 0 and step % args.eval_every == 0
+            should_diagnose = args.diagnostic_every > 0 and step % args.diagnostic_every == 0
+            is_final = step == args.steps
+            should_report = should_log or should_eval or should_diagnose or is_final
             current_lr = learning_rate_for_step(
                 step,
                 base_lr=args.lr,
@@ -1015,6 +1026,7 @@ def main() -> None:
                         )
                         ah_norm_loss = compute_ah_norm_regularizer(
                             model,
+                            ah_norm_weight=args.ah_norm_weight,
                             ah_norm_max=args.ah_norm_max,
                             device=device,
                         )
@@ -1034,7 +1046,11 @@ def main() -> None:
             if device.type == "cuda" and args.precision == "fp16":
                 scaler.unscale_(optimizer)
             first_attention = unwrap_model(model).first_attention
-            if isinstance(first_attention, LieGeneratedMetricAttention):
+            if (
+                should_report
+                and main_process
+                and isinstance(first_attention, LieGeneratedMetricAttention)
+            ):
                 last_grad_norms = grouped_gradient_norms(first_attention)
             if args.max_grad_norm > 0:
                 if not (device.type == "cuda" and args.precision == "fp16"):
@@ -1043,27 +1059,25 @@ def main() -> None:
             scaler.step(optimizer)
             scaler.update()
 
-            mean_task_loss = distributed_mean(torch.stack(task_losses).mean(), ddp_enabled)
-            mean_diversity_loss = distributed_mean(
-                torch.stack(diversity_losses).mean(), ddp_enabled
-            )
-            mean_induced_diversity_loss = distributed_mean(
-                torch.stack(induced_diversity_losses).mean(), ddp_enabled
-            )
-            mean_ah_norm_loss = distributed_mean(
-                torch.stack(ah_norm_losses).mean(), ddp_enabled
-            )
-            last_loss = float(mean_task_loss.cpu())
-            last_diversity_loss = float(mean_diversity_loss.cpu())
-            last_induced_diversity_loss = float(mean_induced_diversity_loss.cpu())
-            last_ah_norm_loss = float(mean_ah_norm_loss.cpu())
+            if should_report:
+                mean_task_loss = distributed_mean(
+                    torch.stack(task_losses).mean(), ddp_enabled
+                )
+                mean_diversity_loss = distributed_mean(
+                    torch.stack(diversity_losses).mean(), ddp_enabled
+                )
+                mean_induced_diversity_loss = distributed_mean(
+                    torch.stack(induced_diversity_losses).mean(), ddp_enabled
+                )
+                mean_ah_norm_loss = distributed_mean(
+                    torch.stack(ah_norm_losses).mean(), ddp_enabled
+                )
+                last_loss = float(mean_task_loss.cpu())
+                last_diversity_loss = float(mean_diversity_loss.cpu())
+                last_induced_diversity_loss = float(mean_induced_diversity_loss.cpu())
+                last_ah_norm_loss = float(mean_ah_norm_loss.cpu())
 
-            should_log = args.log_every > 0 and (step == 1 or step % args.log_every == 0)
-            should_eval = args.eval_every > 0 and step % args.eval_every == 0
-            should_diagnose = args.diagnostic_every > 0 and step % args.diagnostic_every == 0
-            is_final = step == args.steps
-
-            if (should_log or should_eval or should_diagnose or is_final) and main_process:
+            if should_report and main_process:
                 now = time.perf_counter()
                 elapsed = max(now - last_log_time, 1e-12)
                 elapsed_training_seconds = now - training_start_time

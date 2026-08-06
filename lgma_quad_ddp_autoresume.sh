@@ -109,6 +109,7 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
   --min_lr 1e-4 \
   --weight_decay 0.01 \
   --precision bf16 \
+  --compile \
   --attention lgma_quad \
   --num_heads 16 \
   --num_base_heads 4 \
