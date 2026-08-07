@@ -101,6 +101,35 @@ def test_tinystories_generator_normalization_is_opt_in():
     assert normalized_config["normalize_generators"] is True
 
 
+def test_tinystories_compile_backend_is_configurable():
+    import sys
+
+    sys.path.insert(0, str(ROOT / "experiments"))
+    import train_tinystories
+
+    old_argv = sys.argv
+    try:
+        sys.argv = ["train_tinystories.py", "--data_path", "unused.txt"]
+        default_args = train_tinystories.parse_args()
+
+        sys.argv = [
+            "train_tinystories.py",
+            "--data_path",
+            "unused.txt",
+            "--compile",
+            "--compile_backend",
+            "aot_eager",
+        ]
+        diagnostic_args = train_tinystories.parse_args()
+    finally:
+        sys.argv = old_argv
+
+    assert default_args.compile is False
+    assert default_args.compile_backend == "inductor"
+    assert diagnostic_args.compile is True
+    assert diagnostic_args.compile_backend == "aot_eager"
+
+
 def test_tinystories_generator_stability_flags_are_configurable():
     import sys
 

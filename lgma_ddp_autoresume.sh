@@ -25,6 +25,7 @@ cd /home/shahils/Desktop/gitBackupRepo/Attention-is-Transformed/
 
 OUTPUT_DIR=/scratch/shahils/lgma_runs/large_tinystories_lgma_b4_h16_g8_beta1_softmax_h200_4
 KEEP_CHECKPOINTS=3
+COMPILE_BACKEND=${COMPILE_BACKEND:-inductor}
 mkdir -p "$OUTPUT_DIR"
 
 prune_old_checkpoints() {
@@ -115,6 +116,7 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
   --weight_decay 0.01 \
   --precision bf16 \
   --compile \
+  --compile_backend "$COMPILE_BACKEND" \
   --attention lgma_multibase \
   --num_heads 16 \
   --num_base_heads 4 \

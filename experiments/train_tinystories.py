@@ -117,6 +117,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--compile", action="store_true")
     parser.add_argument(
+        "--compile_backend",
+        choices=["eager", "aot_eager", "inductor"],
+        default="inductor",
+        help=(
+            "torch.compile backend. Use eager to test TorchDynamo capture, "
+            "aot_eager to additionally test AOTAutograd, or inductor for the "
+            "fully optimized training path. Only used with --compile."
+        ),
+    )
+    parser.add_argument(
         "--no_ddp",
         action="store_true",
         help="Disable automatic DDP even when launched with torchrun.",
@@ -908,7 +918,7 @@ def main() -> None:
             # Compile the inner module in place so DDP and checkpoint state_dict keys
             # continue to refer to the original model rather than an OptimizedModule
             # wrapper (which prefixes parameters with `_orig_mod`).
-            base_model.compile()
+            base_model.compile(backend=args.compile_backend)
         if ddp_enabled:
             model = DistributedDataParallel(
                 base_model,
