@@ -831,7 +831,7 @@ def save_checkpoint(
     step: int,
     config: dict[str, object],
     args: argparse.Namespace,
-    data_generator: torch.Generator | None = None,
+    data_generator_states: list[torch.Tensor] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     base_model = unwrap_model(model)
@@ -842,9 +842,7 @@ def save_checkpoint(
         "scaler_state": scaler.state_dict() if scaler is not None else None,
         "model_config": config,
         "args": vars(args),
-        "data_generator_state": (
-            data_generator.get_state() if data_generator is not None else None
-        ),
+        "data_generator_states": data_generator_states,
     }
     temporary_path = path.with_name(f".{path.name}.tmp")
     torch.save(payload, temporary_path)
@@ -884,6 +882,7 @@ def load_checkpoint(
     scaler,
     device: torch.device,
     data_generator: torch.Generator | None = None,
+    data_rank: int = 0,
 ) -> int:
     # Trainer checkpoints contain optimizer/config objects in addition to tensors.
     # PyTorch 2.6+ defaults torch.load to weights_only=True, so explicitly opt in
@@ -893,11 +892,46 @@ def load_checkpoint(
     optimizer.load_state_dict(checkpoint["optimizer_state"])
     if scaler is not None and checkpoint.get("scaler_state") is not None:
         scaler.load_state_dict(checkpoint["scaler_state"])
-    if data_generator is not None and checkpoint.get("data_generator_state") is not None:
+    data_generator_states = checkpoint.get("data_generator_states")
+    if data_generator is not None and data_generator_states is not None:
+        if data_rank >= len(data_generator_states):
+            raise ValueError(
+                f"checkpoint has {len(data_generator_states)} data sampler states, "
+                f"but rank {data_rank} was requested"
+            )
+        data_generator.set_state(data_generator_states[data_rank])
+    elif (
+        data_generator is not None
+        and data_rank == 0
+        and checkpoint.get("data_generator_state") is not None
+    ):
+        # Backward compatibility with single-state checkpoints created before
+        # per-rank DDP sampler state was recorded.
         data_generator.set_state(checkpoint["data_generator_state"])
     step = int(checkpoint.get("step", 0))
     print(json.dumps({"event": "checkpoint_loaded", "step": step, "path": str(path)}))
     return step
+
+
+def gather_data_generator_states(
+    data_generator: torch.Generator,
+    ddp_enabled: bool,
+    rank: int,
+    world_size: int,
+) -> list[torch.Tensor] | None:
+    local_state = data_generator.get_state()
+    if not ddp_enabled:
+        return [local_state]
+    gathered: list[torch.Tensor | None] | None = (
+        [None] * world_size if rank == 0 else None
+    )
+    dist.gather_object(local_state, gathered, dst=0)
+    if rank != 0:
+        return None
+    assert gathered is not None
+    if any(state is None for state in gathered):
+        raise RuntimeError("failed to gather every DDP data sampler state")
+    return [state for state in gathered if state is not None]
 
 
 def build_report(
@@ -1129,6 +1163,7 @@ def main() -> None:
                 scaler,
                 device,
                 data_generator,
+                rank,
             )
         if ddp_enabled:
             dist.barrier()
@@ -1305,27 +1340,39 @@ def main() -> None:
                 args.save_every > 0
                 and output_dir is not None
                 and step % args.save_every == 0
-                and main_process
             ):
-                save_checkpoint(
-                    output_dir / f"checkpoint_step_{step}.pt",
-                    model,
-                    optimizer,
-                    scaler,
-                    step,
-                    config,
-                    args,
+                data_generator_states = gather_data_generator_states(
                     data_generator,
+                    ddp_enabled,
+                    rank,
+                    world_size,
                 )
-                prune_old_checkpoints(
-                    output_dir,
-                    args.keep_last_checkpoints,
-                    args.milestone_checkpoint_every,
-                )
+                if main_process:
+                    save_checkpoint(
+                        output_dir / f"checkpoint_step_{step}.pt",
+                        model,
+                        optimizer,
+                        scaler,
+                        step,
+                        config,
+                        args,
+                        data_generator_states,
+                    )
+                    prune_old_checkpoints(
+                        output_dir,
+                        args.keep_last_checkpoints,
+                        args.milestone_checkpoint_every,
+                    )
 
         if last_loss is None:
             raise SystemExit("--steps must be greater than resume checkpoint step")
 
+        final_data_generator_states = gather_data_generator_states(
+            data_generator,
+            ddp_enabled,
+            rank,
+            world_size,
+        )
         if main_process:
             report = build_report(
                 args,
@@ -1367,7 +1414,7 @@ def main() -> None:
                     args.steps,
                     config,
                     args,
-                    data_generator,
+                    final_data_generator_states,
                 )
             log_wandb(wandb_run, {"final": report}, step=args.steps)
             print(json.dumps(report, indent=2))

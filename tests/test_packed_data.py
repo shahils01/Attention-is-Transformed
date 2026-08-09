@@ -119,4 +119,4 @@ def test_existing_training_runner_trains_on_packed_data(tmp_path, monkeypatch):
     assert report["vocab_size"] == 32
     assert report["data_sampling"] == "uniform_random_with_replacement"
     checkpoint = load_full_checkpoint(output / "checkpoint_step_2.pt")
-    assert checkpoint["data_generator_state"] is not None
+    assert len(checkpoint["data_generator_states"]) == 1

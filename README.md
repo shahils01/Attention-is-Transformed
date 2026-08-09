@@ -387,3 +387,8 @@ implementation and resume at the exact next batch after preemption. In-training
 packed validation also uses a fixed random seed, making the sampled validation
 batches identical across steps and runs. The original `--data_path`
 character-text backend remains available for TinyStories.
+
+On DeltaAI, `deltaai/train_fineweb_ddp4.slurm` provides the common full-training
+configuration for MHA, Collaborative MHA, and LGMA. Submit three resumable
+12-hour segments with `deltaai/submit_fineweb_chain.sh`; later segments run only
+when the preceding segment ends before reaching the final checkpoint.
