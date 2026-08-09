@@ -20,6 +20,7 @@ CODE_SNAPSHOT=${CODE_SNAPSHOT:?Set CODE_SNAPSHOT to an immutable source snapshot
 ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to mha, collaborative, or lgma_quad}
 SEED=${SEED:-0}
 TOTAL_STEPS=9512
+WANDB_PROJECT=${WANDB_PROJECT:-lgma-fineweb-edu}
 
 case "${ATTENTION_TYPE}" in
   mha)
@@ -111,7 +112,7 @@ torchrun --standalone --nproc_per_node=4 experiments/train_text_lm.py \
   --output_dir "${OUTPUT_DIR}" \
   --diagnostic_every 500 \
   --diagnostic_batches 2 \
-  --wandb_project lgma \
+  --wandb_project "${WANDB_PROJECT}" \
   --wandb_run_name "${RUN_NAME}" \
   --wandb_group fineweb_edu_10BT \
   --wandb_tags "${TAGS}" \
