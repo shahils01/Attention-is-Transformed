@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import math
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -90,6 +92,93 @@ def evaluate_loss(
         losses.append(loss.detach())
     loss = float(torch.stack(losses).mean().cpu())
     return loss, math.exp(min(loss, 20.0))
+
+
+def precision_context(device: torch.device, precision: str):
+    if precision == "fp32" or device.type != "cuda":
+        return nullcontext()
+    if precision == "bf16":
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    if precision == "fp16":
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
+    raise ValueError(f"unsupported precision: {precision}")
+
+
+@torch.no_grad()
+def evaluate_sequential_loss(
+    model: TinyTransformerLM,
+    encoded: torch.Tensor,
+    batch_size: int,
+    seq_len: int,
+    device: torch.device,
+    *,
+    precision: str = "fp32",
+    max_tokens: int | None = None,
+) -> dict[str, float | int]:
+    """Evaluate every requested next-token target exactly once and deterministically."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if seq_len <= 0:
+        raise ValueError("seq_len must be positive")
+    if encoded.numel() < 2:
+        raise ValueError("encoded text must contain at least two tokens")
+    if max_tokens is not None and max_tokens <= 0:
+        raise ValueError("max_tokens must be positive")
+
+    target_tokens = encoded.numel() - 1
+    if max_tokens is not None:
+        target_tokens = min(target_tokens, max_tokens)
+
+    total_nll = 0.0
+    evaluated_tokens = 0
+    windows = 0
+    cursor = 0
+    while target_tokens - cursor >= seq_len:
+        full_windows = (target_tokens - cursor) // seq_len
+        current_batch = min(batch_size, full_windows)
+        starts = [cursor + index * seq_len for index in range(current_batch)]
+        inputs = torch.stack(
+            [encoded[start : start + seq_len] for start in starts]
+        ).to(device)
+        targets = torch.stack(
+            [encoded[start + 1 : start + seq_len + 1] for start in starts]
+        ).to(device)
+        with precision_context(device, precision):
+            logits = model(inputs)
+            nll = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                targets.reshape(-1),
+                reduction="sum",
+            )
+        count = current_batch * seq_len
+        total_nll += float(nll.cpu())
+        evaluated_tokens += count
+        windows += current_batch
+        cursor += count
+
+    remaining = target_tokens - cursor
+    if remaining > 0:
+        inputs = encoded[cursor : cursor + remaining].unsqueeze(0).to(device)
+        targets = encoded[cursor + 1 : cursor + remaining + 1].unsqueeze(0).to(device)
+        with precision_context(device, precision):
+            logits = model(inputs)
+            nll = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                targets.reshape(-1),
+                reduction="sum",
+            )
+        total_nll += float(nll.cpu())
+        evaluated_tokens += remaining
+        windows += 1
+
+    loss = total_nll / evaluated_tokens
+    return {
+        "loss": loss,
+        "perplexity": math.exp(min(loss, 20.0)),
+        "bits_per_character": loss / math.log(2.0),
+        "evaluated_tokens": evaluated_tokens,
+        "windows": windows,
+    }
 
 
 def encode_prompt(tokenizer: CharTokenizer, prompt: str, device: torch.device) -> torch.Tensor:

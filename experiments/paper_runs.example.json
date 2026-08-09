@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "name": "lgma_g16_seed0",
+      "group": "lgma_g16",
+      "seed": 0,
+      "run_dir": "/work/hdd/biad/sshaik4/lgma_runs/tinystories_lgma_quad_b4_h16_g16_gh200_ddp4_gb2048",
+      "slurm_job_ids": [2908015, 2908016, 2908017, 2908018, 2908019, 2908020],
+      "gpus_per_job": 4,
+      "full_eval_json": "/work/hdd/biad/sshaik4/paper_results/lgma_g16_seed0_full_eval.json",
+      "inference_json": "/work/hdd/biad/sshaik4/paper_results/lgma_g16_seed0_inference.json",
+      "primary_context_length": 512,
+      "wandb_path": "i2rLAB/lgma/WANDB_RUN_ID"
+    }
+  ]
+}

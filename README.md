@@ -272,3 +272,66 @@ python experiments/summarize_tinystories_runs.py \
 
 Use the generated validation-loss-vs-tokens and validation-loss-vs-GPU-hours
 plots for paper figures instead of step-only W&B screenshots.
+
+### Post-training paper evaluation
+
+Use a deterministic complete-split evaluation for the values reported in a
+paper. Unlike the quick validation checks during training, this command visits
+every next-character target in fixed, non-overlapping context windows exactly
+once. Use the same checkpoint step, split, precision, and batch size for every
+model.
+
+```bash
+python experiments/evaluate_tinystories_full.py \
+  --checkpoint /path/to/run/checkpoint_step_250000.pt \
+  --split val \
+  --batch_size 64 \
+  --device cuda \
+  --precision bf16 \
+  --output /path/to/paper_results/model_seed0_full_eval.json
+```
+
+For a separate held-out test file, add `--split file --eval_data_path
+/path/to/test.txt`. The evaluator intentionally refuses characters that are
+absent from the checkpoint vocabulary instead of silently changing tokenization.
+
+Measure single-GPU prefill latency, greedy autoregressive decode latency,
+throughput, peak CUDA memory, parameter counts, attention-score FLOPs, and
+analytic KV-cache size with:
+
+```bash
+python experiments/benchmark_tinystories_inference.py \
+  --checkpoint /path/to/run/checkpoint_step_250000.pt \
+  --context_lengths 128 256 512 \
+  --batch_size 1 \
+  --decode_tokens 32 \
+  --warmup 5 \
+  --repeats 20 \
+  --device cuda \
+  --precision bf16 \
+  --profile_flops \
+  --output /path/to/paper_results/model_seed0_inference.json \
+  --csv /path/to/paper_results/model_seed0_inference.csv
+```
+
+The current TinyTransformer implementation does not expose a reusable KV-cache,
+so measured decoding is explicitly recorded as full-context recomputation. The
+KV-cache field is an architecture-level memory estimate, not a claim that the
+benchmark used caching. Context lengths also cannot exceed the checkpoint's
+trained positional context (currently 512). Profiler FLOPs are operator-reported
+and may omit unsupported fused or custom kernels.
+
+Finally, copy `experiments/paper_runs.example.json`, add one entry per seed, and
+combine training logs, deterministic evaluation, inference measurements, and
+Slurm accounting into paper-ready JSON, CSV, and Markdown tables:
+
+```bash
+python experiments/aggregate_paper_results.py \
+  --manifest experiments/paper_runs.json \
+  --output_dir /path/to/paper_results/tables
+```
+
+Run the aggregator on DeltaAI to collect cumulative GPU-hours from every Slurm
+job segment. Use `--skip_slurm` on a machine without `sacct`, or `--fetch_wandb`
+to add W&B run state and URLs. Group names in the manifest define the rows used
+for multi-seed mean and standard-deviation summaries.
