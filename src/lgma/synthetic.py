@@ -179,10 +179,17 @@ def make_lm_batch(
     batch_size: int,
     seq_len: int,
     device: torch.device | str = "cpu",
+    *,
+    generator: torch.Generator | None = None,
 ) -> SyntheticBatch:
     if encoded.numel() <= seq_len + 1:
         raise ValueError("encoded text is too short for the requested sequence length")
-    starts = torch.randint(0, encoded.numel() - seq_len - 1, (batch_size,))
+    starts = torch.randint(
+        0,
+        encoded.numel() - seq_len - 1,
+        (batch_size,),
+        generator=generator,
+    )
     inputs = torch.stack([encoded[start : start + seq_len] for start in starts]).to(device)
     targets = torch.stack([encoded[start + 1 : start + seq_len + 1] for start in starts]).to(device)
     return SyntheticBatch(input_ids=inputs, targets=targets)

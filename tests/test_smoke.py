@@ -397,10 +397,11 @@ def test_train_tinystories_checkpoint_resumes_after_logging_optimizations(tmp_pa
     finally:
         sys.argv = old_argv
 
-    resumed = torch.load(
+    from lgma.checkpointing import load_full_checkpoint
+
+    resumed = load_full_checkpoint(
         output_dir / "checkpoint_step_2.pt",
         map_location="cpu",
-        weights_only=False,
     )
     assert resumed["step"] == 2
 

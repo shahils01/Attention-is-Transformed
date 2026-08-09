@@ -362,3 +362,28 @@ one binary file per source shard and split, per-shard integrity metadata, and an
 aggregate `dataset_metadata.json`. Completed shards are verified and reused when
 the command is resumed. The DeltaAI batch template is
 `deltaai/prepare_fineweb_edu.slurm`.
+
+Train any supported attention architecture against the packed corpus with the
+same memory-mapped loader:
+
+```bash
+torchrun --standalone --nproc_per_node=4 experiments/train_text_lm.py \
+  --packed_data_dir /path/to/fineweb_edu_10BT_packed_v1 \
+  --attention mha \
+  --device cuda \
+  --precision bf16 \
+  --batch_size 64 \
+  --grad_accum_steps 8 \
+  --context_length 512 \
+  --steps 9512
+```
+
+Training batches are sampled uniformly over valid start positions across all
+binary shards, with replacement. At the batch configuration above, 9,512
+optimizer steps provide a one-corpus-equivalent 9.974-billion-token budget.
+The sampler has a dedicated, checkpointed random-number stream, so runs using
+the same seed receive identical training batches regardless of attention
+implementation and resume at the exact next batch after preemption. In-training
+packed validation also uses a fixed random seed, making the sampled validation
+batches identical across steps and runs. The original `--data_path`
+character-text backend remains available for TinyStories.

@@ -20,6 +20,7 @@ if str(SRC) not in sys.path:
 
 from lgma.accounting import attention_accounting, count_parameters
 from lgma.attention import LieGeneratedMetricAttention
+from lgma.checkpointing import load_full_checkpoint
 from lgma.diagnostics import (
     attention_cosine_similarity,
     centered_attention_cosine_similarity,
@@ -36,7 +37,8 @@ from lgma.diagnostics import (
     metric_singular_values,
     score_cosine_similarity,
 )
-from lgma.synthetic import CharTokenizer, make_lm_batch
+from lgma.packed_data import PackedTokenSplit, load_packed_token_corpus
+from lgma.synthetic import CharTokenizer, SyntheticBatch, make_lm_batch
 from lgma.tracking import finish_wandb, init_wandb_run, log_wandb
 from lgma.transformer import LGMA_ATTENTION_TYPES, TinyTransformerLM, load_model_config
 
@@ -61,9 +63,15 @@ GENERATOR_TYPES = ["full", "diagonal", "symmetric"]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Character-level text LM runner with LGMA/MHA diagnostics."
+        description="Text LM runner with LGMA/MHA diagnostics."
     )
-    parser.add_argument("--data_path", required=True)
+    data_group = parser.add_mutually_exclusive_group(required=True)
+    data_group.add_argument("--data_path")
+    data_group.add_argument(
+        "--packed_data_dir",
+        type=Path,
+        help="Packed-token corpus produced by experiments/prepare_fineweb.py.",
+    )
     parser.add_argument(
         "--val_data_path",
         default=None,
@@ -525,10 +533,34 @@ def build_tokenizer(train_text: str, val_text: str | None) -> CharTokenizer:
     return CharTokenizer(train_text + val_text)
 
 
+def make_data_batch(
+    data: torch.Tensor | PackedTokenSplit,
+    batch_size: int,
+    seq_len: int,
+    device: torch.device,
+    *,
+    generator: torch.Generator | None = None,
+) -> SyntheticBatch:
+    if isinstance(data, PackedTokenSplit):
+        return data.sample_batch(
+            batch_size,
+            seq_len,
+            device=device,
+            generator=generator,
+        )
+    return make_lm_batch(
+        data,
+        batch_size,
+        seq_len,
+        device=device,
+        generator=generator,
+    )
+
+
 @torch.no_grad()
 def evaluate_text_loss(
     model: TinyTransformerLM,
-    encoded: torch.Tensor,
+    encoded: torch.Tensor | PackedTokenSplit,
     batch_size: int,
     seq_len: int,
     device: torch.device,
@@ -536,8 +568,17 @@ def evaluate_text_loss(
 ) -> float:
     model.eval()
     losses = []
+    generator = None
+    if isinstance(encoded, PackedTokenSplit):
+        generator = torch.Generator().manual_seed(17_029)
     for _ in range(eval_batches):
-        batch = make_lm_batch(encoded, batch_size, seq_len, device=device)
+        batch = make_data_batch(
+            encoded,
+            batch_size,
+            seq_len,
+            device,
+            generator=generator,
+        )
         _, loss = model(batch.input_ids, batch.targets)
         losses.append(loss.detach())
     model.train()
@@ -615,7 +656,7 @@ def compute_ah_norm_regularizer(
 def add_attention_diagnostics(
     report: dict[str, object],
     model: TinyTransformerLM,
-    encoded: torch.Tensor,
+    encoded: torch.Tensor | PackedTokenSplit,
     batch_size: int,
     seq_len: int,
     device: torch.device,
@@ -624,11 +665,20 @@ def add_attention_diagnostics(
     model = unwrap_model(model)
     first_attn = model.first_attention
     with torch.no_grad():
+        generator = None
+        if isinstance(encoded, PackedTokenSplit):
+            generator = torch.Generator().manual_seed(91_337)
         attention_sims = []
         centered_sims = []
         score_sims = []
         for _ in range(max(1, diagnostic_batches)):
-            batch = make_lm_batch(encoded, batch_size, seq_len, device=device)
+            batch = make_data_batch(
+                encoded,
+                batch_size,
+                seq_len,
+                device,
+                generator=generator,
+            )
             x = model.blocks[0].norm1(
                 model.token_embedding(batch.input_ids)
                 + model.position_embedding(torch.arange(seq_len, device=device))[None, :, :]
@@ -781,6 +831,7 @@ def save_checkpoint(
     step: int,
     config: dict[str, object],
     args: argparse.Namespace,
+    data_generator: torch.Generator | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     base_model = unwrap_model(model)
@@ -791,6 +842,9 @@ def save_checkpoint(
         "scaler_state": scaler.state_dict() if scaler is not None else None,
         "model_config": config,
         "args": vars(args),
+        "data_generator_state": (
+            data_generator.get_state() if data_generator is not None else None
+        ),
     }
     temporary_path = path.with_name(f".{path.name}.tmp")
     torch.save(payload, temporary_path)
@@ -829,15 +883,18 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer,
     scaler,
     device: torch.device,
+    data_generator: torch.Generator | None = None,
 ) -> int:
     # Trainer checkpoints contain optimizer/config objects in addition to tensors.
     # PyTorch 2.6+ defaults torch.load to weights_only=True, so explicitly opt in
     # to loading the full payload created by save_checkpoint above.
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    checkpoint = load_full_checkpoint(path, map_location=device)
     unwrap_model(model).load_state_dict(checkpoint["model_state"])
     optimizer.load_state_dict(checkpoint["optimizer_state"])
     if scaler is not None and checkpoint.get("scaler_state") is not None:
         scaler.load_state_dict(checkpoint["scaler_state"])
+    if data_generator is not None and checkpoint.get("data_generator_state") is not None:
+        data_generator.set_state(checkpoint["data_generator_state"])
     step = int(checkpoint.get("step", 0))
     print(json.dumps({"event": "checkpoint_loaded", "step": step, "path": str(path)}))
     return step
@@ -847,9 +904,9 @@ def build_report(
     args: argparse.Namespace,
     config: dict[str, object],
     model: TinyTransformerLM,
-    tokenizer: CharTokenizer,
-    train_encoded: torch.Tensor,
-    val_encoded: torch.Tensor,
+    tokenizer,
+    train_encoded: torch.Tensor | PackedTokenSplit,
+    val_encoded: torch.Tensor | PackedTokenSplit,
     device: torch.device,
     final_loss: float,
     final_diversity_loss: float,
@@ -871,11 +928,13 @@ def build_report(
     report: dict[str, object] = {
         "data_path": args.data_path,
         "val_data_path": args.val_data_path,
+        "packed_data_dir": str(args.packed_data_dir) if args.packed_data_dir else None,
+        "data_backend": "packed_uint16" if args.packed_data_dir else "character_text",
         "config": args.config,
         "model_config": config,
         "vocab_size": tokenizer.vocab_size,
-        "train_characters": int(train_encoded.numel()),
-        "validation_characters": int(val_encoded.numel()),
+        "train_tokens": int(train_encoded.numel()),
+        "validation_tokens": int(val_encoded.numel()),
         "parameters": count_parameters(base_model),
         "effective_attention_config": effective_attention_config(first_attn),
         "attention_accounting": attention_accounting(
@@ -913,6 +972,8 @@ def build_report(
 
 def main() -> None:
     args = parse_args()
+    if args.packed_data_dir is not None and args.val_data_path is not None:
+        raise SystemExit("--val_data_path cannot be used with --packed_data_dir")
     if args.grad_accum_steps <= 0:
         raise SystemExit("--grad_accum_steps must be positive")
     if args.lr <= 0:
@@ -955,6 +1016,9 @@ def main() -> None:
     main_process = is_main_process(rank)
     try:
         torch.manual_seed(args.seed + rank)
+        # Keep data ordering independent of architecture initialization and save
+        # its state in checkpoints for exact continuation after preemption.
+        data_generator = torch.Generator().manual_seed(args.seed + rank)
         if ddp_enabled:
             if args.device != "cuda":
                 raise SystemExit("DDP requires --device cuda")
@@ -966,15 +1030,23 @@ def main() -> None:
                 device = torch.device("cuda", torch.cuda.current_device())
             torch.cuda.set_device(device)
             torch.backends.cuda.matmul.allow_tf32 = True
-        train_text = Path(args.data_path).read_text(encoding="utf-8")
-        val_text = (
-            Path(args.val_data_path).read_text(encoding="utf-8")
-            if args.val_data_path is not None
-            else None
-        )
-        tokenizer = build_tokenizer(train_text, val_text)
-        train_encoded = tokenizer.encode(train_text)
-        val_encoded = tokenizer.encode(val_text) if val_text is not None else train_encoded
+        if args.packed_data_dir is not None:
+            corpus = load_packed_token_corpus(args.packed_data_dir)
+            tokenizer = corpus.tokenizer
+            train_encoded = corpus.train
+            val_encoded = corpus.validation
+            data_backend = "packed_uint16"
+        else:
+            train_text = Path(args.data_path).read_text(encoding="utf-8")
+            val_text = (
+                Path(args.val_data_path).read_text(encoding="utf-8")
+                if args.val_data_path is not None
+                else None
+            )
+            tokenizer = build_tokenizer(train_text, val_text)
+            train_encoded = tokenizer.encode(train_text)
+            val_encoded = tokenizer.encode(val_text) if val_text is not None else train_encoded
+            data_backend = "character_text"
 
         config = model_config_from_args(args)
         seq_len = int(config["context_length"])
@@ -1038,8 +1110,11 @@ def main() -> None:
                     ).__dict__,
                     "parameters": count_parameters(unwrap_model(model)),
                     "vocab_size": tokenizer.vocab_size,
-                    "train_characters": int(train_encoded.numel()),
-                    "validation_characters": int(val_encoded.numel()),
+                    "data_backend": data_backend,
+                    "train_tokens": int(train_encoded.numel()),
+                    "validation_tokens": int(val_encoded.numel()),
+                    "data_sampling": "uniform_random_with_replacement",
+                    "data_seed": args.seed + rank,
                     "distributed": ddp_enabled,
                     "world_size": world_size,
                 },
@@ -1047,7 +1122,14 @@ def main() -> None:
 
         start_step = 0
         if args.resume_checkpoint is not None:
-            start_step = load_checkpoint(args.resume_checkpoint, model, optimizer, scaler, device)
+            start_step = load_checkpoint(
+                args.resume_checkpoint,
+                model,
+                optimizer,
+                scaler,
+                device,
+                data_generator,
+            )
         if ddp_enabled:
             dist.barrier()
 
@@ -1084,7 +1166,13 @@ def main() -> None:
             induced_diversity_losses = []
             ah_norm_losses = []
             for accum_idx in range(args.grad_accum_steps):
-                batch = make_lm_batch(train_encoded, args.batch_size, seq_len, device=device)
+                batch = make_data_batch(
+                    train_encoded,
+                    args.batch_size,
+                    seq_len,
+                    device,
+                    generator=data_generator,
+                )
                 sync_context = (
                     model.no_sync()
                     if ddp_enabled and accum_idx < args.grad_accum_steps - 1
@@ -1227,6 +1315,7 @@ def main() -> None:
                     step,
                     config,
                     args,
+                    data_generator,
                 )
                 prune_old_checkpoints(
                     output_dir,
@@ -1257,6 +1346,8 @@ def main() -> None:
             report["tokens_per_step"] = tokens_per_step
             report["tokens_seen"] = args.steps * tokens_per_step
             report["effective_global_batch"] = effective_global_batch
+            report["data_sampling"] = "uniform_random_with_replacement"
+            report["data_seed"] = args.seed
             elapsed_training_seconds = time.perf_counter() - training_start_time
             report["elapsed_training_seconds"] = elapsed_training_seconds
             report["elapsed_training_hours"] = elapsed_training_seconds / 3600.0
@@ -1276,6 +1367,7 @@ def main() -> None:
                     args.steps,
                     config,
                     args,
+                    data_generator,
                 )
             log_wandb(wandb_run, {"final": report}, step=args.steps)
             print(json.dumps(report, indent=2))

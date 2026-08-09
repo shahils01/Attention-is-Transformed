@@ -14,6 +14,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from lgma.synthetic import CharTokenizer, make_lm_batch
+from lgma.checkpointing import load_full_checkpoint
 from lgma.transformer import TinyTransformerLM
 
 
@@ -57,7 +58,7 @@ def load_tinystories_checkpoint(
 ) -> tuple[TinyTransformerLM, CharTokenizer, torch.Tensor, torch.Tensor, dict[str, object], int]:
     # These are full checkpoints produced by train_tinystories.py, including
     # configuration metadata that is not accepted by weights-only loading.
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    checkpoint = load_full_checkpoint(checkpoint_path, map_location=device)
     train_path, val_path = paths_from_checkpoint(checkpoint, data_path, val_data_path)
     train_text, val_text = read_texts(train_path, val_path)
     tokenizer = build_tokenizer(train_text, val_text)
