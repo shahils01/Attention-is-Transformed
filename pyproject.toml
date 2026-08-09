@@ -19,6 +19,9 @@ dev = [
 data = [
   "datasets",
   "huggingface_hub",
+  "numpy",
+  "pyarrow",
+  "tokenizers",
 ]
 vla = [
   "h5py",

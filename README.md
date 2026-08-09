@@ -335,3 +335,30 @@ Run the aggregator on DeltaAI to collect cumulative GPU-hours from every Slurm
 job segment. Use `--skip_slurm` on a machine without `sacct`, or `--fetch_wandb`
 to add W&B run state and URLs. Group names in the manifest define the rows used
 for multi-seed mean and standard-deviation summaries.
+
+### FineWeb-Edu preprocessing
+
+The FineWeb pipeline creates deterministic document-level splits, trains one
+shared byte-level BPE tokenizer using training documents only, and packs each
+source Parquet shard into resumable little-endian `uint16` token files. Every
+document is terminated by `<eos>`. Validation and test assignments use a stable
+BLAKE2 hash of the FineWeb document ID, so all attention variants receive
+identical data without materializing duplicate Parquet datasets.
+
+```bash
+python experiments/prepare_fineweb.py \
+  --input_dir /path/to/fineweb_edu_10BT/sample/10BT \
+  --output_dir /path/to/fineweb_edu_10BT_packed_v1 \
+  --phase all \
+  --vocab_size 32768 \
+  --validation_basis_points 10 \
+  --test_basis_points 10 \
+  --tokenizer_sample_modulus 50 \
+  --batch_size 256
+```
+
+The output includes `split_manifest.json`, `tokenizer.json`, tokenizer metadata,
+one binary file per source shard and split, per-shard integrity metadata, and an
+aggregate `dataset_metadata.json`. Completed shards are verified and reused when
+the command is resumed. The DeltaAI batch template is
+`deltaai/prepare_fineweb_edu.slurm`.
