@@ -13,6 +13,7 @@ from lgma.transformer import TransformerBlock
 VLAActionHeadType = Literal["mlp", "flow"]
 VLAAttentionType = Literal[
     "mha",
+    "collaborative",
     "shared_identity",
     "lgma",
     "lgma_multibase",

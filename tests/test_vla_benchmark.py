@@ -106,6 +106,7 @@ def _config(
     ("attention", "num_base_heads"),
     [
         ("mha", 1),
+        ("collaborative", 1),
         ("shared_identity", 1),
         ("lgma", 1),
         ("lgma_multibase", 2),

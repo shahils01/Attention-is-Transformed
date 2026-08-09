@@ -180,6 +180,112 @@ class StandardMultiheadAttention(nn.Module):
         return out
 
 
+class CollaborativeAttention(nn.Module):
+    """Collaborative multi-head attention with shared Q/K projections.
+
+    This is the direct mixing-vector baseline from Cordonnier et al.,
+    "Multi-Head Attention: Collaborate Instead of Concatenate". Each head
+    learns an unrestricted vector ``m_h`` and scores shared queries and keys as
+    ``q.T @ diag(m_h) @ k``. Values remain independently projected per head.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        head_dim: int,
+        dropout: float = 0.0,
+        bias: bool = False,
+        causal: bool = False,
+        base_dim: int | None = None,
+        value_dim: int | None = None,
+    ) -> None:
+        super().__init__()
+        if d_model <= 0 or num_heads <= 0 or head_dim <= 0:
+            raise ValueError("d_model, num_heads, and head_dim must be positive")
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.num_base_heads = 1
+        self.generated_heads_per_base = num_heads
+        self.head_dim = head_dim
+        self.base_dim = head_dim if base_dim is None else base_dim
+        self.value_dim = head_dim if value_dim is None else value_dim
+        if self.base_dim <= 0 or self.value_dim <= 0:
+            raise ValueError("base_dim and value_dim must be positive")
+        self.inner_dim = num_heads * self.value_dim
+        self.dropout = dropout
+        self.causal = causal
+
+        self.q_proj = nn.Linear(d_model, self.base_dim, bias=bias)
+        self.k_proj = nn.Linear(d_model, self.base_dim, bias=bias)
+        self.v_proj = nn.Linear(d_model, self.inner_dim, bias=bias)
+        self.out_proj = nn.Linear(self.inner_dim, d_model, bias=bias)
+        self.mixing_vector = nn.Parameter(torch.ones(num_heads, self.base_dim))
+        self.attn_dropout = nn.Dropout(dropout)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.xavier_uniform_(self.q_proj.weight)
+        nn.init.xavier_uniform_(self.k_proj.weight)
+        nn.init.xavier_uniform_(self.v_proj.weight)
+        nn.init.xavier_uniform_(self.out_proj.weight)
+        nn.init.ones_(self.mixing_vector)
+        if self.q_proj.bias is not None:
+            nn.init.zeros_(self.q_proj.bias)
+            nn.init.zeros_(self.k_proj.bias)
+            nn.init.zeros_(self.v_proj.bias)
+            nn.init.zeros_(self.out_proj.bias)
+
+    def compute_metrics(self) -> torch.Tensor:
+        """Return the exact per-head diagonal mixing matrices."""
+        return torch.diag_embed(self.mixing_vector)
+
+    def compute_head_generators(self) -> torch.Tensor:
+        """Return the residual diagonal used by shared metric diagnostics."""
+        return torch.diag_embed(self.mixing_vector - 1.0)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        key_padding_mask: torch.Tensor | None = None,
+        need_weights: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        batch, seq_len, _ = x.shape
+        q_shared = self.q_proj(x)
+        k_shared = self.k_proj(x)
+        v = (
+            self.v_proj(x)
+            .view(batch, seq_len, self.num_heads, self.value_dim)
+            .transpose(1, 2)
+        )
+
+        q = q_shared[:, None, :, :] * self.mixing_vector[None, :, None, :]
+        k = k_shared[:, None, :, :].expand(-1, self.num_heads, -1, -1)
+
+        out_heads = None
+        if not need_weights and attn_mask is None and key_padding_mask is None:
+            out_heads = _sdpa_attention(
+                q,
+                k,
+                v,
+                dropout_p=self.dropout if self.training else 0.0,
+                causal=self.causal,
+            )
+        if out_heads is None:
+            scores = torch.einsum("bhtd,bhsd->bhts", q, k) / math.sqrt(self.base_dim)
+            scores = _apply_masks(scores, self.causal, attn_mask, key_padding_mask)
+            attn = torch.softmax(scores, dim=-1)
+            attn = self.attn_dropout(attn)
+            out_heads = torch.einsum("bhts,bhsv->bhtv", attn, v)
+
+        out = out_heads.transpose(1, 2).contiguous().view(batch, seq_len, self.inner_dim)
+        out = self.out_proj(out)
+        if need_weights:
+            return out, attn
+        return out
+
+
 class SharedIdentityAttention(nn.Module):
     """Shared Q/K/V baseline equivalent to LGMA with all metrics fixed to identity."""
 

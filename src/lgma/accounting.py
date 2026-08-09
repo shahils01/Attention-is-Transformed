@@ -63,7 +63,13 @@ def v_parameter_count(module: nn.Module) -> int:
 def generator_parameter_count(module: nn.Module) -> int:
     return count_named_parameters(
         module,
-        ("generators", "theta", "raw_metrics", "raw_value_transforms"),
+        (
+            "generators",
+            "theta",
+            "raw_metrics",
+            "raw_value_transforms",
+            "mixing_vector",
+        ),
     )
 
 
@@ -78,6 +84,12 @@ def kv_cache_bytes_per_token_per_layer(
     size = dtype_size(dtype)
     if hasattr(attention_module, "num_kv_heads"):
         return 2 * attention_module.num_kv_heads * attention_module.head_dim * size
+    if attention_module.__class__.__name__ == "CollaborativeAttention":
+        # Keys are shared, while values remain independently projected per head.
+        return (
+            attention_module.base_dim
+            + attention_module.num_heads * attention_module.value_dim
+        ) * size
     if attention_module.__class__.__name__ == "LieGeneratedMetricAttention":
         base_dim = getattr(attention_module, "base_dim", attention_module.head_dim)
         value_dim = getattr(attention_module, "value_dim", attention_module.head_dim)

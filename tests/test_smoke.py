@@ -219,6 +219,7 @@ def test_tiny_lm_forward_loss_for_attention_variants():
     torch.manual_seed(0)
     for attention_type in (
         "mha",
+        "collaborative",
         "lgma",
         "lgma_v2",
         "lgma_residual",
@@ -243,7 +244,12 @@ def test_tiny_lm_forward_loss_for_attention_variants():
 
 
 def test_config_loading_instantiates_first_phase_variants():
-    for name in ("tiny_mha.json", "tiny_lgma_diag.json", "tiny_lgma_full.json"):
+    for name in (
+        "tiny_mha.json",
+        "tiny_collaborative.json",
+        "tiny_lgma_diag.json",
+        "tiny_lgma_full.json",
+    ):
         model = tiny_lm_from_config(ROOT / "experiments" / "configs" / name, vocab_size=32)
         assert isinstance(model, TinyTransformerLM)
 

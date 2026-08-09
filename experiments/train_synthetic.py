@@ -59,6 +59,7 @@ def parse_args() -> argparse.Namespace:
             "mha",
             "mqa",
             "gqa",
+            "collaborative",
             "shared_identity",
             "lgma",
             "lgma_v2",

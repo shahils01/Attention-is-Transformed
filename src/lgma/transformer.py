@@ -10,6 +10,7 @@ import torch.nn.functional as F
 
 from lgma.attention import LieGeneratedMetricAttention
 from lgma.baselines import (
+    CollaborativeAttention,
     GroupedQueryAttention,
     MultiQueryAttention,
     SharedIdentityAttention,
@@ -21,6 +22,7 @@ AttentionType = Literal[
     "reduced_mha",
     "mqa",
     "gqa",
+    "collaborative",
     "shared_identity",
     "lgma",
     "lgma_v2",
@@ -97,6 +99,16 @@ def build_attention(
             num_kv_heads=num_kv_heads,
             dropout=dropout,
             causal=causal,
+        )
+    if attention_type == "collaborative":
+        return CollaborativeAttention(
+            d_model=d_model,
+            num_heads=num_heads,
+            head_dim=head_dim,
+            dropout=dropout,
+            causal=causal,
+            base_dim=base_dim,
+            value_dim=value_dim,
         )
     if attention_type == "shared_identity":
         return SharedIdentityAttention(

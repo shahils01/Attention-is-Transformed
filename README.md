@@ -57,6 +57,20 @@ python experiments/train_synthetic.py --task previous --attention lgma --causal 
 python experiments/train_synthetic.py --task cumsum_mod --attention mha --causal --steps 100
 ```
 
+Use `collaborative` for the direct mixing-vector baseline from *Multi-Head
+Attention: Collaborate Instead of Concatenate*. It shares Q/K projections,
+learns one unrestricted diagonal mixing vector per head, and retains independent
+per-head value projections:
+
+```bash
+python experiments/train_synthetic.py --task multi_relation --attention collaborative --steps 5000
+python experiments/train_tinystories.py \
+  --data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path $DATA_DIR/tinystories/TinyStoriesV2-GPT4-valid.txt \
+  --attention collaborative \
+  --steps 50000
+```
+
 LGMA head diversity can be encouraged with wider head-coordinate initialization
 and an optional metric-diversity regularizer:
 

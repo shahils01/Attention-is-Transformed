@@ -45,6 +45,7 @@ ATTENTION_TYPES = [
     "mha",
     "mqa",
     "gqa",
+    "collaborative",
     "shared_identity",
     "lgma",
     "lgma_v2",

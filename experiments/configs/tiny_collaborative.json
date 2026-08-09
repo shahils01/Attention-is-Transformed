@@ -1,0 +1,12 @@
+{
+  "attention_type": "collaborative",
+  "d_model": 128,
+  "num_layers": 4,
+  "num_heads": 8,
+  "head_dim": 16,
+  "base_dim": 16,
+  "value_dim": 16,
+  "context_length": 128,
+  "dropout": 0.0,
+  "causal": true
+}

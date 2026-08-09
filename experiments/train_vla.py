@@ -33,6 +33,7 @@ from lgma.vla_model import VLAPolicyConfig, VLATransformerPolicy, ee6d_continuou
 
 ATTENTION_CHOICES = (
     "mha",
+    "collaborative",
     "shared_identity",
     "lgma",
     "lgma_multibase",

@@ -11,7 +11,11 @@ from lgma.accounting import (
     v_parameter_count,
 )
 from lgma.attention import LieGeneratedMetricAttention
-from lgma.baselines import GroupedQueryAttention, StandardMultiheadAttention
+from lgma.baselines import (
+    CollaborativeAttention,
+    GroupedQueryAttention,
+    StandardMultiheadAttention,
+)
 from lgma.diagnostics import (
     attention_cosine_similarity,
     attention_entropy,
@@ -180,6 +184,28 @@ def test_lgma_accounting_uses_base_and_value_dimensions():
     assert v_parameter_count(layer) == 16 * 3
     assert kv_cache_bytes_per_token_per_layer(layer, dtype=torch.float16) == (6 + 3) * 2
     report = attention_accounting(layer, sequence_length=8, batch_size=2)
+    assert report.attention_score_flops == 2 * 2 * 4 * 8 * 8 * 6
+
+
+def test_collaborative_attention_accounting_tracks_shared_keys_and_per_head_values():
+    layer = CollaborativeAttention(
+        d_model=16,
+        num_heads=4,
+        head_dim=4,
+        base_dim=6,
+        value_dim=3,
+        bias=False,
+    )
+    assert q_parameter_count(layer) == 16 * 6
+    assert k_parameter_count(layer) == 16 * 6
+    assert v_parameter_count(layer) == 16 * 4 * 3
+    assert generator_parameter_count(layer) == 4 * 6
+    assert kv_cache_bytes_per_token_per_layer(
+        layer, dtype=torch.float16
+    ) == (6 + 4 * 3) * 2
+    report = attention_accounting(layer, sequence_length=8, batch_size=2)
+    assert report.base_heads == 1
+    assert report.generated_heads_per_base == 4
     assert report.attention_score_flops == 2 * 2 * 4 * 8 * 8 * 6
 
 
