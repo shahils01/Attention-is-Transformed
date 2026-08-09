@@ -391,8 +391,54 @@ def test_train_tinystories_checkpoint_resumes_after_logging_optimizations(tmp_pa
     finally:
         sys.argv = old_argv
 
-    resumed = torch.load(output_dir / "checkpoint_step_2.pt", map_location="cpu")
+    resumed = torch.load(
+        output_dir / "checkpoint_step_2.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
     assert resumed["step"] == 2
+
+
+def test_tinystories_checkpoint_retention_keeps_latest_steps(tmp_path):
+    import sys
+
+    sys.path.insert(0, str(ROOT / "experiments"))
+    import train_tinystories
+
+    for step in [100, 20, 300, 200]:
+        (tmp_path / f"checkpoint_step_{step}.pt").write_text("checkpoint")
+    unrelated = tmp_path / "checkpoint_final.pt"
+    unrelated.write_text("final")
+
+    train_tinystories.prune_old_checkpoints(tmp_path, keep=3)
+
+    assert sorted(path.name for path in tmp_path.glob("checkpoint_step_*.pt")) == [
+        "checkpoint_step_100.pt",
+        "checkpoint_step_200.pt",
+        "checkpoint_step_300.pt",
+    ]
+    assert unrelated.exists()
+
+
+def test_tinystories_checkpoint_retention_preserves_milestones(tmp_path):
+    import sys
+
+    sys.path.insert(0, str(ROOT / "experiments"))
+    import train_tinystories
+
+    for step in [50_000, 100_000, 150_000, 150_100, 150_200, 150_300]:
+        (tmp_path / f"checkpoint_step_{step}.pt").write_text("checkpoint")
+
+    train_tinystories.prune_old_checkpoints(
+        tmp_path,
+        keep=3,
+        milestone_every=50_000,
+    )
+
+    assert sorted(
+        int(path.stem.removeprefix("checkpoint_step_"))
+        for path in tmp_path.glob("checkpoint_step_*.pt")
+    ) == [50_000, 100_000, 150_000, 150_100, 150_200, 150_300]
 
 
 def test_tinystories_eval_and_generation_helpers_load_checkpoint(tmp_path):

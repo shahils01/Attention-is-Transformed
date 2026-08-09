@@ -82,6 +82,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log_every", type=int, default=50)
     parser.add_argument("--eval_every", type=int, default=0)
     parser.add_argument("--save_every", type=int, default=0)
+    parser.add_argument(
+        "--keep_last_checkpoints",
+        type=int,
+        default=0,
+        help=(
+            "Keep only the newest N checkpoint_step_*.pt files. "
+            "Use 0 to retain all periodic checkpoints."
+        ),
+    )
+    parser.add_argument(
+        "--milestone_checkpoint_every",
+        type=int,
+        default=0,
+        help=(
+            "Never prune periodic checkpoints whose step is divisible by N. "
+            "Use 0 to disable milestone retention."
+        ),
+    )
     parser.add_argument("--output_dir", type=Path, default=None)
     parser.add_argument("--resume_checkpoint", type=Path, default=None)
     parser.add_argument("--grad_accum_steps", type=int, default=1)
@@ -92,6 +110,16 @@ def parse_args() -> argparse.Namespace:
         choices=["constant", "cosine"],
         default="constant",
         help="Learning-rate schedule after optional warmup.",
+    )
+    parser.add_argument(
+        "--lr_schedule_steps",
+        type=int,
+        default=None,
+        help=(
+            "Optional step horizon used only by the learning-rate schedule. "
+            "Defaults to --steps, allowing a shorter run to match a longer "
+            "reference run's schedule."
+        ),
     )
     parser.add_argument(
         "--warmup_steps",
@@ -763,8 +791,35 @@ def save_checkpoint(
         "model_config": config,
         "args": vars(args),
     }
-    torch.save(payload, path)
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    torch.save(payload, temporary_path)
+    os.replace(temporary_path, path)
     print(json.dumps({"event": "checkpoint_saved", "step": step, "path": str(path)}))
+
+
+def prune_old_checkpoints(
+    output_dir: Path,
+    keep: int,
+    milestone_every: int = 0,
+) -> None:
+    if keep <= 0:
+        return
+    checkpoints: list[tuple[int, Path]] = []
+    prefix = "checkpoint_step_"
+    suffix = ".pt"
+    for path in output_dir.glob(f"{prefix}*{suffix}"):
+        step_text = path.name[len(prefix) : -len(suffix)]
+        if step_text.isdigit():
+            checkpoints.append((int(step_text), path))
+    checkpoints.sort(key=lambda item: item[0], reverse=True)
+    latest_steps = {step for step, _ in checkpoints[:keep]}
+    for step, path in checkpoints:
+        if step in latest_steps:
+            continue
+        if milestone_every > 0 and step % milestone_every == 0:
+            continue
+        path.unlink()
+        print(json.dumps({"event": "checkpoint_pruned", "step": step, "path": str(path)}))
 
 
 def load_checkpoint(
@@ -774,7 +829,10 @@ def load_checkpoint(
     scaler,
     device: torch.device,
 ) -> int:
-    checkpoint = torch.load(path, map_location=device)
+    # Trainer checkpoints contain optimizer/config objects in addition to tensors.
+    # PyTorch 2.6+ defaults torch.load to weights_only=True, so explicitly opt in
+    # to loading the full payload created by save_checkpoint above.
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
     unwrap_model(model).load_state_dict(checkpoint["model_state"])
     optimizer.load_state_dict(checkpoint["optimizer_state"])
     if scaler is not None and checkpoint.get("scaler_state") is not None:
@@ -866,8 +924,14 @@ def main() -> None:
         raise SystemExit("--min_lr must be non-negative")
     if args.min_lr > args.lr:
         raise SystemExit("--min_lr must be <= --lr")
+    if args.lr_schedule_steps is not None and args.lr_schedule_steps <= 0:
+        raise SystemExit("--lr_schedule_steps must be positive")
     if args.log_every < 0 or args.eval_every < 0 or args.save_every < 0:
         raise SystemExit("--log_every, --eval_every, and --save_every must be non-negative")
+    if args.keep_last_checkpoints < 0:
+        raise SystemExit("--keep_last_checkpoints must be non-negative")
+    if args.milestone_checkpoint_every < 0:
+        raise SystemExit("--milestone_checkpoint_every must be non-negative")
     if args.metric_clip_min is not None and args.metric_clip_min < 0:
         raise SystemExit("--metric_clip_min must be non-negative")
     if (
@@ -897,6 +961,8 @@ def main() -> None:
         else:
             device = resolve_device(args.device)
         if device.type == "cuda":
+            if device.index is None:
+                device = torch.device("cuda", torch.cuda.current_device())
             torch.cuda.set_device(device)
             torch.backends.cuda.matmul.allow_tf32 = True
         train_text = Path(args.data_path).read_text(encoding="utf-8")
@@ -1004,7 +1070,7 @@ def main() -> None:
                 step,
                 base_lr=args.lr,
                 min_lr=args.min_lr,
-                total_steps=args.steps,
+                total_steps=args.lr_schedule_steps or args.steps,
                 warmup_steps=args.warmup_steps,
                 hold_steps=args.lr_hold_steps,
                 schedule=args.lr_schedule,
@@ -1160,6 +1226,11 @@ def main() -> None:
                     step,
                     config,
                     args,
+                )
+                prune_old_checkpoints(
+                    output_dir,
+                    args.keep_last_checkpoints,
+                    args.milestone_checkpoint_every,
                 )
 
         if last_loss is None:
