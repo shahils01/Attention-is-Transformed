@@ -4,7 +4,7 @@
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=256g
 #SBATCH --gpus-per-node=4
 #SBATCH --time=12:00:00
@@ -61,7 +61,7 @@ OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/${RUN_NAME}
 
 module load python/miniforge3_pytorch/2.12.0
 source "${VENV_DIR}/bin/activate"
-export OMP_NUM_THREADS=8
+export OMP_NUM_THREADS=2
 export WANDB_RUN_ID=${RUN_NAME}
 export WANDB_RESUME=allow
 
