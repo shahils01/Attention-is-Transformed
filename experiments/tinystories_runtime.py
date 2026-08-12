@@ -212,9 +212,14 @@ def generate_text(
         missing = [char for char in stop_sequence if char not in tokenizer.stoi]
         if not missing:
             stop_ids = tokenizer.encode(stop_sequence).to(device)
-    for _ in range(max_new_tokens):
-        context = ids[:, -model.context_length :]
-        logits = model(context)[:, -1, :] / temperature
+    context = ids[:, -model.context_length :]
+    if context.size(1) < model.context_length:
+        logits, past_key_values = model(context, use_cache=True)
+    else:
+        logits = model(context)
+        past_key_values = None
+    for step in range(max_new_tokens):
+        logits = logits[:, -1, :] / temperature
         if top_k is not None and top_k > 0 and top_k < logits.size(-1):
             values, _ = torch.topk(logits, top_k)
             logits[logits < values[:, [-1]]] = -torch.inf
@@ -224,6 +229,21 @@ def generate_text(
         if stop_ids is not None and ids.size(1) - prompt_len >= stop_ids.numel():
             if torch.equal(ids[0, -stop_ids.numel() :], stop_ids):
                 break
+        if step + 1 == max_new_tokens:
+            break
+        if past_key_values is not None and past_key_values[0][0].shape[-2] < model.context_length:
+            logits, past_key_values = model(
+                next_id,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+        else:
+            # Learned absolute positions prevent reusing cached projections after
+            # the sliding window shifts. Preserve the original behavior by
+            # recomputing the full window once the trained context is exhausted.
+            context = ids[:, -model.context_length :]
+            logits = model(context)
+            past_key_values = None
     generated = tokenizer.decode(ids[0, prompt_len:].cpu())
     if stop_sequence:
         generated = generated.split(stop_sequence, 1)[0]

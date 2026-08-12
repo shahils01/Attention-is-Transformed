@@ -43,6 +43,8 @@ RUN_COLUMNS = [
     "decode_tokens_per_second",
     "decode_median_ms_per_token",
     "kv_cache_bytes_per_token_per_layer",
+    "measured_kv_cache_bytes",
+    "measured_kv_cache_bytes_per_token_per_layer",
 ]
 
 GROUP_METRICS = [
@@ -197,6 +199,12 @@ def read_inference_benchmark(
         ),
         "kv_cache_bytes_per_token_per_layer": as_float(
             selected["attention_accounting"].get("kv_cache_bytes_per_token_per_layer")
+        ),
+        "measured_kv_cache_bytes": as_float(
+            selected["decode"].get("measured_kv_cache_bytes")
+        ),
+        "measured_kv_cache_bytes_per_token_per_layer": as_float(
+            selected["decode"].get("measured_kv_cache_bytes_per_token_per_layer")
         ),
     }
 

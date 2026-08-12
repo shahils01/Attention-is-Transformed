@@ -18,7 +18,7 @@ from lgma.accounting import attention_accounting, count_parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark TinyStories checkpoint prefill and uncached autoregressive decoding."
+        description="Benchmark TinyStories checkpoint prefill and KV-cached autoregressive decoding."
     )
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--data_path", type=Path, default=None)
@@ -65,27 +65,62 @@ def latency_summary(seconds: list[float]) -> dict[str, float]:
 
 
 @torch.no_grad()
-def prefill_once(model, input_ids: torch.Tensor, device: torch.device, precision: str) -> None:
+def prefill_once(
+    model,
+    input_ids: torch.Tensor,
+    device: torch.device,
+    precision: str,
+    *,
+    use_cache: bool = False,
+):
     with precision_context(device, precision):
-        model(input_ids)
+        return model(input_ids, use_cache=use_cache)
 
 
 @torch.no_grad()
 def decode_once(
     model,
-    prompt: torch.Tensor,
-    context_length: int,
+    next_id: torch.Tensor,
+    past_key_values,
     decode_tokens: int,
     device: torch.device,
     precision: str,
-) -> None:
-    ids = prompt
+) -> tuple[torch.Tensor, object]:
     for _ in range(decode_tokens):
-        context = ids[:, -context_length:]
         with precision_context(device, precision):
-            logits = model(context)
+            logits, past_key_values = model(
+                next_id,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
         next_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
-        ids = torch.cat([ids, next_id], dim=1)
+    return next_id, past_key_values
+
+
+@torch.no_grad()
+def prepare_cached_decode(
+    model,
+    prompt: torch.Tensor,
+    device: torch.device,
+    precision: str,
+) -> tuple[torch.Tensor, object]:
+    logits, past_key_values = prefill_once(
+        model,
+        prompt,
+        device,
+        precision,
+        use_cache=True,
+    )
+    next_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+    return next_id, past_key_values
+
+
+def cache_num_bytes(past_key_values) -> int:
+    return sum(
+        tensor.numel() * tensor.element_size()
+        for layer_cache in past_key_values
+        for tensor in layer_cache
+    )
 
 
 def profile_prefill_flops(
@@ -99,7 +134,7 @@ def profile_prefill_flops(
         activities.append(torch.profiler.ProfilerActivity.CUDA)
     synchronize(device)
     with torch.profiler.profile(activities=activities, with_flops=True) as profile:
-        prefill_once(model, input_ids, device, precision)
+        prefill_once(model, input_ids, device, precision, use_cache=True)
         synchronize(device)
     return int(sum(event.flops or 0 for event in profile.key_averages()))
 
@@ -116,10 +151,23 @@ def benchmark_context(
     precision: str,
     profile_flops: bool = False,
 ) -> dict[str, Any]:
+    if context_length + decode_tokens > model.context_length:
+        raise ValueError(
+            "cached decoding requires context_length + decode_tokens <= "
+            f"model.context_length ({model.context_length})"
+        )
     prompt = encoded[:context_length].unsqueeze(0).repeat(batch_size, 1).to(device)
     for _ in range(warmup):
-        prefill_once(model, prompt, device, precision)
-        decode_once(model, prompt, context_length, min(decode_tokens, 2), device, precision)
+        next_id, past_key_values = prepare_cached_decode(model, prompt, device, precision)
+        _, warmup_cache = decode_once(
+            model,
+            next_id,
+            past_key_values,
+            min(decode_tokens, 2),
+            device,
+            precision,
+        )
+        del next_id, past_key_values, warmup_cache
     synchronize(device)
 
     if device.type == "cuda":
@@ -128,15 +176,26 @@ def benchmark_context(
     for _ in range(repeats):
         synchronize(device)
         started = time.perf_counter()
-        prefill_once(model, prompt, device, precision)
+        prefill_once(model, prompt, device, precision, use_cache=True)
         synchronize(device)
         prefill_times.append(time.perf_counter() - started)
 
     decode_times = []
+    final_past_key_values = None
     for _ in range(repeats):
+        if final_past_key_values is not None:
+            del final_past_key_values
+        next_id, past_key_values = prepare_cached_decode(model, prompt, device, precision)
         synchronize(device)
         started = time.perf_counter()
-        decode_once(model, prompt, context_length, decode_tokens, device, precision)
+        _, final_past_key_values = decode_once(
+            model,
+            next_id,
+            past_key_values,
+            decode_tokens,
+            device,
+            precision,
+        )
         synchronize(device)
         decode_times.append(time.perf_counter() - started)
 
@@ -153,6 +212,10 @@ def benchmark_context(
         batch_size=batch_size,
         dtype=dtype,
     )
+    measured_cache_bytes = cache_num_bytes(final_past_key_values)
+    measured_cache_bytes_per_token_per_layer = measured_cache_bytes // (
+        batch_size * (context_length + decode_tokens) * len(model.blocks)
+    )
     result: dict[str, Any] = {
         "context_length": context_length,
         "batch_size": batch_size,
@@ -165,7 +228,12 @@ def benchmark_context(
             "generated_tokens": decode_tokens,
             "tokens_per_second": batch_size * decode_tokens / max(decode_median, 1e-12),
             "median_ms_per_token": decode_median * 1000.0 / decode_tokens,
-            "mode": "full_context_recompute_no_kv_cache",
+            "mode": "prefill_then_kv_cached_autoregressive_decode",
+            "cache_length": context_length + decode_tokens,
+            "measured_kv_cache_bytes": measured_cache_bytes,
+            "measured_kv_cache_bytes_per_token_per_layer": (
+                measured_cache_bytes_per_token_per_layer
+            ),
         },
         "attention_accounting": accounting.__dict__,
     }
@@ -193,6 +261,8 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "prefill_tokens_per_second",
         "decode_median_ms_per_token",
         "decode_tokens_per_second",
+        "measured_kv_cache_bytes",
+        "measured_kv_cache_bytes_per_token_per_layer",
         "peak_memory_allocated_gib",
         "peak_memory_reserved_gib",
         "kv_cache_bytes_per_token_per_layer",
@@ -213,6 +283,12 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                     "prefill_tokens_per_second": result["prefill"]["tokens_per_second"],
                     "decode_median_ms_per_token": result["decode"]["median_ms_per_token"],
                     "decode_tokens_per_second": result["decode"]["tokens_per_second"],
+                    "measured_kv_cache_bytes": result["decode"][
+                        "measured_kv_cache_bytes"
+                    ],
+                    "measured_kv_cache_bytes_per_token_per_layer": result["decode"][
+                        "measured_kv_cache_bytes_per_token_per_layer"
+                    ],
                     "peak_memory_allocated_gib": result.get("peak_memory_allocated_gib"),
                     "peak_memory_reserved_gib": result.get("peak_memory_reserved_gib"),
                     "kv_cache_bytes_per_token_per_layer": result["attention_accounting"][
@@ -243,13 +319,17 @@ def main() -> None:
         val_data_path=args.val_data_path,
     )
     model_context = int(config["context_length"])
+    max_cached_prompt = model_context - args.decode_tokens
+    if max_cached_prompt <= 0:
+        raise SystemExit("--decode_tokens must be smaller than the model context length")
     context_lengths = args.context_lengths or sorted(
-        {length for length in (128, 256, model_context) if length <= model_context}
+        {length for length in (128, 256, max_cached_prompt) if length <= max_cached_prompt}
     )
-    invalid = [length for length in context_lengths if length <= 0 or length > model_context]
+    invalid = [length for length in context_lengths if length <= 0 or length > max_cached_prompt]
     if invalid:
         raise SystemExit(
-            f"context lengths must be in [1, {model_context}] for this checkpoint: {invalid}"
+            f"context lengths must be in [1, {max_cached_prompt}] so cached decoding "
+            f"fits within the checkpoint context window: {invalid}"
         )
     if val_encoded.numel() < max(context_lengths):
         raise SystemExit("validation text is shorter than the largest context length")
@@ -270,7 +350,7 @@ def main() -> None:
         for context_length in context_lengths
     ]
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "checkpoint": str(args.checkpoint),
         "checkpoint_step": step,
         "attention_type": config["attention_type"],
@@ -279,7 +359,7 @@ def main() -> None:
         "precision": args.precision,
         "warmup": args.warmup,
         "repeats": args.repeats,
-        "decode_mode": "full_context_recompute_no_kv_cache",
+        "decode_mode": "prefill_then_kv_cached_autoregressive_decode",
         "profile_flops": args.profile_flops,
         "results": results,
     }

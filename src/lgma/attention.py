@@ -20,6 +20,27 @@ def _negative_large(dtype: torch.dtype) -> float:
     return -1e9
 
 
+KVCache = tuple[torch.Tensor, torch.Tensor]
+
+
+def _append_base_cache(
+    key: torch.Tensor,
+    value: torch.Tensor,
+    past_key_value: KVCache | None,
+) -> KVCache:
+    """Append base K/V tensors stored as [batch, bases, time, dim]."""
+    if past_key_value is None:
+        return key, value
+    past_key, past_value = past_key_value
+    if past_key.ndim != 4 or past_value.ndim != 4:
+        raise ValueError("cached keys and values must have shape [batch, bases, time, dim]")
+    if past_key.shape[:2] + past_key.shape[3:] != key.shape[:2] + key.shape[3:]:
+        raise ValueError("cached key shape is incompatible with the current base projection")
+    if past_value.shape[:2] + past_value.shape[3:] != value.shape[:2] + value.shape[3:]:
+        raise ValueError("cached value shape is incompatible with the current base projection")
+    return torch.cat((past_key, key), dim=2), torch.cat((past_value, value), dim=2)
+
+
 class LieGeneratedMetricAttention(nn.Module):
     """Multi-head attention with shared Q/K/V and Lie-generated head metrics."""
 
@@ -551,9 +572,26 @@ class LieGeneratedMetricAttention(nn.Module):
         return scores / scale
 
     def _expand_values(self, v: torch.Tensor) -> torch.Tensor:
-        values = self._reshape_base_values(v)
+        if v.ndim == 3:
+            values = self._reshape_base_values(v)
+        elif v.ndim == 4:
+            values = v
+        else:
+            raise ValueError("values must have shape [batch, time, bases*dim] or [batch, bases, time, dim]")
         batch, _, seq_len, _ = values.shape
         values = values[:, :, None, :, :].expand(
+            batch,
+            self.num_base_heads,
+            self.generated_heads_per_base,
+            seq_len,
+            self.value_dim,
+        )
+        return values.reshape(batch, self.num_heads, seq_len, self.value_dim)
+
+    def _apply_value_transforms_to_outputs(self, values: torch.Tensor) -> torch.Tensor:
+        """Apply linear head transforms after aggregation instead of to every cached token."""
+        batch, _, seq_len, _ = values.shape
+        values = values.reshape(
             batch,
             self.num_base_heads,
             self.generated_heads_per_base,
@@ -593,7 +631,12 @@ class LieGeneratedMetricAttention(nn.Module):
         return values
 
     def _expand_keys(self, k: torch.Tensor) -> torch.Tensor:
-        keys = self._reshape_base_qk(k)
+        if k.ndim == 3:
+            keys = self._reshape_base_qk(k)
+        elif k.ndim == 4:
+            keys = k
+        else:
+            raise ValueError("keys must have shape [batch, time, bases*dim] or [batch, bases, time, dim]")
         batch, _, seq_len, _ = keys.shape
         keys = keys[:, :, None, :, :].expand(
             batch,
@@ -616,7 +659,7 @@ class LieGeneratedMetricAttention(nn.Module):
         if self.causal:
             causal_mask = torch.ones(
                 target_len, source_len, device=scores.device, dtype=torch.bool
-            ).triu(1)
+            ).triu(source_len - target_len + 1)
             scores = scores.masked_fill(causal_mask[None, None, :, :], neg_large)
 
         if attn_mask is not None:
@@ -669,6 +712,7 @@ class LieGeneratedMetricAttention(nn.Module):
         attn = torch.softmax(scores, dim=-1)
         attn = self.attn_dropout(attn)
         out_heads = torch.einsum("bhts,bhsd->bhtd", attn, self._expand_values(v))
+        out_heads = self._apply_value_transforms_to_outputs(out_heads)
         return out_heads, attn
 
     def _sdpa_attention(
@@ -679,7 +723,7 @@ class LieGeneratedMetricAttention(nn.Module):
         attn_mask: torch.Tensor | None,
         key_padding_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        batch, seq_len, _ = q.shape
+        batch, target_len, _ = q.shape
         metrics = self.compute_metrics() if self.logit_scale_mode == "rms_metric" else None
         q_metric = self._apply_metric_to_queries(q, metrics=metrics)
         scale = self._score_scale(metrics=metrics)
@@ -690,15 +734,34 @@ class LieGeneratedMetricAttention(nn.Module):
             sdpa_scale = 1.0
         else:
             sdpa_scale = 1.0 / scale
-        k_expanded = self._expand_keys(k)
-        v_expanded = self._expand_values(v)
+        k_base = self._reshape_base_qk(k) if k.ndim == 3 else k
+        v_base = self._reshape_base_values(v) if v.ndim == 3 else v
+        source_len = k_base.shape[-2]
 
         sdpa_mask = self._prepare_sdpa_mask(attn_mask, q.dtype, q.device)
+        is_causal = self.causal and target_len == source_len and sdpa_mask is None
+        if self.causal and target_len != source_len:
+            blocked = torch.ones(
+                target_len,
+                source_len,
+                device=q.device,
+                dtype=torch.bool,
+            ).triu(source_len - target_len + 1)
+            causal_additive = torch.zeros(
+                target_len,
+                source_len,
+                device=q.device,
+                dtype=q.dtype,
+            ).masked_fill(blocked, _negative_large(q.dtype))
+            if sdpa_mask is None:
+                sdpa_mask = causal_additive
+            else:
+                sdpa_mask = sdpa_mask + causal_additive
         if key_padding_mask is not None:
             neg_large = _negative_large(q.dtype)
             pad_mask = key_padding_mask[:, None, None, :].to(device=q.device, dtype=torch.bool)
             pad_additive = torch.zeros(
-                batch, 1, 1, seq_len, device=q.device, dtype=q.dtype
+                batch, 1, 1, source_len, device=q.device, dtype=q.dtype
             ).masked_fill(pad_mask, neg_large)
             if sdpa_mask is None:
                 sdpa_mask = pad_additive
@@ -710,15 +773,41 @@ class LieGeneratedMetricAttention(nn.Module):
             return out_heads
 
         dropout_p = self.dropout if self.training else 0.0
-        return F.scaled_dot_product_attention(
-            q_metric,
-            k_expanded,
-            v_expanded,
-            attn_mask=sdpa_mask,
-            dropout_p=dropout_p,
-            is_causal=self.causal and sdpa_mask is None,
-            scale=sdpa_scale,
-        )
+        if self.num_heads == self.num_base_heads:
+            out_heads = F.scaled_dot_product_attention(
+                q_metric,
+                k_base,
+                v_base,
+                attn_mask=sdpa_mask,
+                dropout_p=dropout_p,
+                is_causal=is_causal,
+                scale=sdpa_scale,
+            )
+        else:
+            try:
+                out_heads = F.scaled_dot_product_attention(
+                    q_metric,
+                    k_base,
+                    v_base,
+                    attn_mask=sdpa_mask,
+                    dropout_p=dropout_p,
+                    is_causal=is_causal,
+                    scale=sdpa_scale,
+                    enable_gqa=True,
+                )
+            except (TypeError, RuntimeError):
+                # Older PyTorch builds lack native GQA. Expand only for the
+                # attention call; the persistent cache remains base-sized.
+                out_heads = F.scaled_dot_product_attention(
+                    q_metric,
+                    self._expand_keys(k_base),
+                    self._expand_values(v_base),
+                    attn_mask=sdpa_mask,
+                    dropout_p=dropout_p,
+                    is_causal=is_causal,
+                    scale=sdpa_scale,
+                )
+        return self._apply_value_transforms_to_outputs(out_heads)
 
     @staticmethod
     def _prepare_sdpa_mask(
@@ -753,11 +842,17 @@ class LieGeneratedMetricAttention(nn.Module):
         attn_mask: torch.Tensor | None = None,
         key_padding_mask: torch.Tensor | None = None,
         need_weights: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        past_key_value: KVCache | None = None,
+        use_cache: bool = False,
+    ):
         if x.ndim != 3:
             raise ValueError(f"x must have shape (batch, seq_len, d_model), got {tuple(x.shape)}")
 
-        q, k, v = self._project(x)
+        q, k_new, v_new = self._project(x)
+        k_base_new = self._reshape_base_qk(k_new)
+        v_base_new = self._reshape_base_values(v_new)
+        k, v = _append_base_cache(k_base_new, v_base_new, past_key_value)
+        present_key_value = (k, v)
         if self.use_sdpa and not need_weights:
             out_heads = self._sdpa_attention(q, k, v, attn_mask, key_padding_mask)
             attn = None
@@ -768,8 +863,12 @@ class LieGeneratedMetricAttention(nn.Module):
         out_heads = out_heads.transpose(1, 2).contiguous()
         out_heads = out_heads.view(batch, seq_len, self.num_heads * self.value_dim)
         out = self.out_proj(out_heads)
+        if need_weights and attn is None:
+            raise RuntimeError("attention weights unavailable on SDPA path")
+        if need_weights and use_cache:
+            return out, attn, present_key_value
         if need_weights:
-            if attn is None:
-                raise RuntimeError("attention weights unavailable on SDPA path")
             return out, attn
+        if use_cache:
+            return out, present_key_value
         return out

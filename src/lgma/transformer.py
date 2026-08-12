@@ -44,6 +44,9 @@ LGMA_ATTENTION_TYPES = {
     "lgma_multibase_value_diag",
 }
 
+KVCache = tuple[torch.Tensor, torch.Tensor]
+ModelKVCache = tuple[KVCache, ...]
+
 
 def build_attention(
     attention_type: AttentionType,
@@ -260,9 +263,26 @@ class TransformerBlock(nn.Module):
             nn.Dropout(dropout),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.norm1(x))
+    def forward(
+        self,
+        x: torch.Tensor,
+        past_key_value: KVCache | None = None,
+        use_cache: bool = False,
+    ):
+        attention_result = self.attn(
+            self.norm1(x),
+            past_key_value=past_key_value,
+            use_cache=use_cache,
+        )
+        if use_cache:
+            attention_output, present_key_value = attention_result
+        else:
+            attention_output = attention_result
+            present_key_value = None
+        x = x + attention_output
         x = x + self.mlp(self.norm2(x))
+        if use_cache:
+            return x, present_key_value
         return x
 
 
@@ -353,20 +373,47 @@ class TinyTransformerLM(nn.Module):
         self,
         input_ids: torch.Tensor,
         targets: torch.Tensor | None = None,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        past_key_values: ModelKVCache | None = None,
+        use_cache: bool = False,
+    ):
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape (batch, seq_len)")
+        if past_key_values is not None and not use_cache:
+            raise ValueError("past_key_values requires use_cache=True")
+        if targets is not None and use_cache:
+            raise ValueError("KV caching is only supported when targets is None")
+        if past_key_values is not None and len(past_key_values) != len(self.blocks):
+            raise ValueError("past_key_values must contain one entry per Transformer layer")
         batch, seq_len = input_ids.shape
-        if seq_len > self.context_length:
+        past_length = 0
+        if past_key_values:
+            past_length = past_key_values[0][0].shape[-2]
+            for layer_cache in past_key_values:
+                if layer_cache[0].shape[-2] != past_length or layer_cache[1].shape[-2] != past_length:
+                    raise ValueError("all layer caches must have the same sequence length")
+        if past_length + seq_len > self.context_length:
             raise ValueError(
-                f"sequence length {seq_len} exceeds context_length {self.context_length}"
+                f"cached length {past_length} plus sequence length {seq_len} exceeds "
+                f"context_length {self.context_length}"
             )
-        positions = torch.arange(seq_len, device=input_ids.device)
+        positions = torch.arange(past_length, past_length + seq_len, device=input_ids.device)
         x = self.token_embedding(input_ids) + self.position_embedding(positions)[None, :, :]
         x = self.drop(x)
-        for block in self.blocks:
-            x = block(x)
+        present_key_values = []
+        for layer_index, block in enumerate(self.blocks):
+            layer_past = None if past_key_values is None else past_key_values[layer_index]
+            if use_cache:
+                x, layer_present = block(
+                    x,
+                    past_key_value=layer_past,
+                    use_cache=True,
+                )
+                present_key_values.append(layer_present)
+            else:
+                x = block(x)
         logits = self.lm_head(self.norm(x))
+        if use_cache:
+            return logits, tuple(present_key_values)
         if targets is None:
             return logits
         loss = F.cross_entropy(logits.reshape(batch * seq_len, self.vocab_size), targets.reshape(-1))

@@ -295,14 +295,14 @@ For a separate held-out test file, add `--split file --eval_data_path
 /path/to/test.txt`. The evaluator intentionally refuses characters that are
 absent from the checkpoint vocabulary instead of silently changing tokenization.
 
-Measure single-GPU prefill latency, greedy autoregressive decode latency,
-throughput, peak CUDA memory, parameter counts, attention-score FLOPs, and
-analytic KV-cache size with:
+Measure single-GPU prefill latency, greedy KV-cached autoregressive decoding,
+throughput, peak CUDA memory, parameter counts, attention-score FLOPs, and both
+analytic and measured KV-cache size with:
 
 ```bash
 python experiments/benchmark_tinystories_inference.py \
   --checkpoint /path/to/run/checkpoint_step_250000.pt \
-  --context_lengths 128 256 512 \
+  --context_lengths 128 256 480 \
   --batch_size 1 \
   --decode_tokens 32 \
   --warmup 5 \
@@ -314,11 +314,11 @@ python experiments/benchmark_tinystories_inference.py \
   --csv /path/to/paper_results/model_seed0_inference.csv
 ```
 
-The current TinyTransformer implementation does not expose a reusable KV-cache,
-so measured decoding is explicitly recorded as full-context recomputation. The
-KV-cache field is an architecture-level memory estimate, not a claim that the
-benchmark used caching. Context lengths also cannot exceed the checkpoint's
-trained positional context (currently 512). Profiler FLOPs are operator-reported
+The benchmark performs one cache-producing prefill followed by single-token
+cached decoding. Prompt length plus `--decode_tokens` cannot exceed the
+checkpoint's trained positional context (currently 512). It records both the
+architecture-level cache estimate and the bytes in the returned per-layer cache;
+these values should agree per token and layer. Profiler FLOPs are operator-reported
 and may omit unsupported fused or custom kernels.
 
 Finally, copy `experiments/paper_runs.example.json`, add one entry per seed, and

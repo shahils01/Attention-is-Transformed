@@ -9,6 +9,68 @@ import torch.nn.functional as F
 from lgma.attention import _negative_large
 
 
+KVCache = tuple[torch.Tensor, torch.Tensor]
+
+
+def _append_to_cache(
+    key: torch.Tensor,
+    value: torch.Tensor,
+    past_key_value: KVCache | None,
+) -> KVCache:
+    """Append sequence-first cache entries stored as [batch, heads, time, dim]."""
+    if past_key_value is None:
+        return key, value
+    past_key, past_value = past_key_value
+    if past_key.ndim != 4 or past_value.ndim != 4:
+        raise ValueError("cached keys and values must have shape [batch, heads, time, dim]")
+    if past_key.shape[:2] + past_key.shape[3:] != key.shape[:2] + key.shape[3:]:
+        raise ValueError("cached key shape is incompatible with the current key projection")
+    if past_value.shape[:2] + past_value.shape[3:] != value.shape[:2] + value.shape[3:]:
+        raise ValueError("cached value shape is incompatible with the current value projection")
+    return torch.cat((past_key, key), dim=2), torch.cat((past_value, value), dim=2)
+
+
+def _format_attention_output(
+    output: torch.Tensor,
+    attention: torch.Tensor | None,
+    present_key_value: KVCache,
+    *,
+    need_weights: bool,
+    use_cache: bool,
+):
+    if need_weights and use_cache:
+        return output, attention, present_key_value
+    if need_weights:
+        return output, attention
+    if use_cache:
+        return output, present_key_value
+    return output
+
+
+def _causal_sdpa_mask(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    causal: bool,
+) -> tuple[torch.Tensor | None, bool]:
+    """Return an offset causal mask for cached/chunked decoding."""
+    if not causal:
+        return None, False
+    target_len = q.shape[-2]
+    source_len = k.shape[-2]
+    if target_len == source_len:
+        return None, True
+    if target_len > source_len:
+        raise ValueError("causal attention cannot have more queries than available keys")
+    blocked = torch.ones(
+        target_len,
+        source_len,
+        device=q.device,
+        dtype=torch.bool,
+    ).triu(source_len - target_len + 1)
+    mask = torch.zeros(target_len, source_len, device=q.device, dtype=q.dtype)
+    return mask.masked_fill(blocked, _negative_large(q.dtype)), False
+
+
 def _apply_masks(
     scores: torch.Tensor,
     causal: bool,
@@ -18,7 +80,12 @@ def _apply_masks(
     neg_large = _negative_large(scores.dtype)
     batch, _, target_len, source_len = scores.shape
     if causal:
-        mask = torch.ones(target_len, source_len, device=scores.device, dtype=torch.bool).triu(1)
+        mask = torch.ones(
+            target_len,
+            source_len,
+            device=scores.device,
+            dtype=torch.bool,
+        ).triu(source_len - target_len + 1)
         scores = scores.masked_fill(mask[None, None, :, :], neg_large)
     if attn_mask is not None:
         attn_mask = attn_mask.to(scores.device)
@@ -60,12 +127,14 @@ def _sdpa_attention(
     """Use memory-efficient SDPA when available, otherwise request the explicit path."""
     if not hasattr(F, "scaled_dot_product_attention"):
         return None
+    attn_mask, is_causal = _causal_sdpa_mask(q, k, causal)
     return F.scaled_dot_product_attention(
         q,
         k,
         v,
+        attn_mask=attn_mask,
         dropout_p=dropout_p,
-        is_causal=causal,
+        is_causal=is_causal,
     )
 
 
@@ -84,13 +153,15 @@ def _grouped_sdpa_attention(
     if q.shape[1] == k.shape[1]:
         return _sdpa_attention(q, k, v, dropout_p=dropout_p, causal=causal)
 
+    attn_mask, is_causal = _causal_sdpa_mask(q, k, causal)
     try:
         return F.scaled_dot_product_attention(
             q,
             k,
             v,
+            attn_mask=attn_mask,
             dropout_p=dropout_p,
-            is_causal=causal,
+            is_causal=is_causal,
             enable_gqa=True,
         )
     except TypeError:
@@ -152,11 +223,15 @@ class StandardMultiheadAttention(nn.Module):
         attn_mask: torch.Tensor | None = None,
         key_padding_mask: torch.Tensor | None = None,
         need_weights: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        past_key_value: KVCache | None = None,
+        use_cache: bool = False,
+    ):
         batch, seq_len, _ = x.shape
         q = self.q_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k_new = self.k_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v_new = self.v_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k, v = _append_to_cache(k_new, v_new, past_key_value)
+        present_key_value = (k, v)
 
         out_heads = None
         if not need_weights and attn_mask is None and key_padding_mask is None:
@@ -175,9 +250,13 @@ class StandardMultiheadAttention(nn.Module):
             out_heads = torch.einsum("bhts,bhsd->bhtd", attn, v)
         out = out_heads.transpose(1, 2).contiguous().view(batch, seq_len, self.inner_dim)
         out = self.out_proj(out)
-        if need_weights:
-            return out, attn
-        return out
+        return _format_attention_output(
+            out,
+            attn if need_weights else None,
+            present_key_value,
+            need_weights=need_weights,
+            use_cache=use_cache,
+        )
 
 
 class CollaborativeAttention(nn.Module):
@@ -250,18 +329,22 @@ class CollaborativeAttention(nn.Module):
         attn_mask: torch.Tensor | None = None,
         key_padding_mask: torch.Tensor | None = None,
         need_weights: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        past_key_value: KVCache | None = None,
+        use_cache: bool = False,
+    ):
         batch, seq_len, _ = x.shape
         q_shared = self.q_proj(x)
-        k_shared = self.k_proj(x)
-        v = (
+        k_new = self.k_proj(x)[:, None, :, :]
+        v_new = (
             self.v_proj(x)
             .view(batch, seq_len, self.num_heads, self.value_dim)
             .transpose(1, 2)
         )
+        k_cached, v = _append_to_cache(k_new, v_new, past_key_value)
+        present_key_value = (k_cached, v)
 
         q = q_shared[:, None, :, :] * self.mixing_vector[None, :, None, :]
-        k = k_shared[:, None, :, :].expand(-1, self.num_heads, -1, -1)
+        k = k_cached.expand(-1, self.num_heads, -1, -1)
 
         out_heads = None
         if not need_weights and attn_mask is None and key_padding_mask is None:
@@ -281,9 +364,13 @@ class CollaborativeAttention(nn.Module):
 
         out = out_heads.transpose(1, 2).contiguous().view(batch, seq_len, self.inner_dim)
         out = self.out_proj(out)
-        if need_weights:
-            return out, attn
-        return out
+        return _format_attention_output(
+            out,
+            attn if need_weights else None,
+            present_key_value,
+            need_weights=need_weights,
+            use_cache=use_cache,
+        )
 
 
 class SharedIdentityAttention(nn.Module):
@@ -323,13 +410,20 @@ class SharedIdentityAttention(nn.Module):
         attn_mask: torch.Tensor | None = None,
         key_padding_mask: torch.Tensor | None = None,
         need_weights: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        past_key_value: KVCache | None = None,
+        use_cache: bool = False,
+    ):
         batch, seq_len, _ = x.shape
         q = self.q_proj(x)
-        k = self.k_proj(x)
-        v = self.v_proj(x)
+        k_new = self.k_proj(x)[:, None, :, :]
+        v_new = self.v_proj(x)[:, None, :, :]
+        k_cached, v_cached = _append_to_cache(k_new, v_new, past_key_value)
+        present_key_value = (k_cached, v_cached)
+        k = k_cached[:, 0]
+        v = v_cached[:, 0]
+        source_len = k.shape[1]
         scores = torch.einsum("btd,bsd->bts", q, k) / math.sqrt(self.head_dim)
-        scores = scores[:, None, :, :].expand(batch, self.num_heads, seq_len, seq_len)
+        scores = scores[:, None, :, :].expand(batch, self.num_heads, seq_len, source_len)
         scores = _apply_masks(scores, self.causal, attn_mask, key_padding_mask)
         attn = torch.softmax(scores, dim=-1)
         attn = self.attn_dropout(attn)
@@ -338,9 +432,13 @@ class SharedIdentityAttention(nn.Module):
             batch, seq_len, self.num_heads * self.head_dim
         )
         out = self.out_proj(out)
-        if need_weights:
-            return out, attn
-        return out
+        return _format_attention_output(
+            out,
+            attn if need_weights else None,
+            present_key_value,
+            need_weights=need_weights,
+            use_cache=use_cache,
+        )
 
 
 class GroupedQueryAttention(nn.Module):
@@ -387,11 +485,15 @@ class GroupedQueryAttention(nn.Module):
         attn_mask: torch.Tensor | None = None,
         key_padding_mask: torch.Tensor | None = None,
         need_weights: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        past_key_value: KVCache | None = None,
+        use_cache: bool = False,
+    ):
         batch, seq_len, _ = x.shape
         q = self.q_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        k_new = self.k_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v_new = self.v_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        k, v = _append_to_cache(k_new, v_new, past_key_value)
+        present_key_value = (k, v)
         out_heads = None
         if not need_weights and attn_mask is None and key_padding_mask is None:
             out_heads = _grouped_sdpa_attention(
@@ -412,9 +514,13 @@ class GroupedQueryAttention(nn.Module):
             out_heads = torch.einsum("bhts,bhsd->bhtd", attn, v)
         out = out_heads.transpose(1, 2).contiguous().view(batch, seq_len, self.inner_dim)
         out = self.out_proj(out)
-        if need_weights:
-            return out, attn
-        return out
+        return _format_attention_output(
+            out,
+            attn if need_weights else None,
+            present_key_value,
+            need_weights=need_weights,
+            use_cache=use_cache,
+        )
 
 
 class MultiQueryAttention(GroupedQueryAttention):

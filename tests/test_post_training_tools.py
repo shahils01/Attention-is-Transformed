@@ -61,7 +61,7 @@ def test_sequential_evaluation_is_deterministic_and_covers_each_target_once():
     assert math.isclose(first["perplexity"], math.exp(first["loss"]), rel_tol=1e-7)
 
 
-def test_inference_benchmark_labels_uncached_decode():
+def test_inference_benchmark_measures_cached_decode():
     result = benchmark_context(
         tiny_model(),
         torch.arange(20, dtype=torch.long) % 7,
@@ -76,7 +76,12 @@ def test_inference_benchmark_labels_uncached_decode():
 
     assert result["prefill"]["tokens_per_second"] > 0
     assert result["decode"]["tokens_per_second"] > 0
-    assert result["decode"]["mode"] == "full_context_recompute_no_kv_cache"
+    assert result["decode"]["mode"] == "prefill_then_kv_cached_autoregressive_decode"
+    assert result["decode"]["measured_kv_cache_bytes"] > 0
+    assert (
+        result["decode"]["measured_kv_cache_bytes_per_token_per_layer"]
+        == result["attention_accounting"]["kv_cache_bytes_per_token_per_layer"]
+    )
     assert result["attention_accounting"]["attention_score_flops"] > 0
 
 
