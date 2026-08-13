@@ -12,6 +12,10 @@ sys.path.insert(0, str(ROOT / "experiments"))
 
 from lgma.packed_data import load_packed_token_corpus  # noqa: E402
 from lgma.checkpointing import load_full_checkpoint  # noqa: E402
+from train_tinystories import (  # noqa: E402
+    normalize_data_generator_state,
+    restore_data_generator_state,
+)
 
 
 def make_packed_corpus(root: Path, vocab_size: int = 32) -> Path:
@@ -45,6 +49,33 @@ def make_packed_corpus(root: Path, vocab_size: int = 32) -> Path:
     }
     (root / "dataset_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     return root
+
+
+def test_generator_state_is_normalized_for_cpu_generator_restore():
+    generator = torch.Generator().manual_seed(123)
+    original_state = generator.get_state()
+    non_byte_state = original_state.to(dtype=torch.int64)
+
+    normalized_state = normalize_data_generator_state(non_byte_state)
+
+    assert normalized_state.device.type == "cpu"
+    assert normalized_state.dtype == torch.uint8
+    restored = torch.Generator()
+    restored.set_state(normalized_state)
+    assert torch.equal(restored.get_state(), original_state)
+
+
+def test_new_ddp_rank_retains_its_independent_seeded_generator_state():
+    saved_generator = torch.Generator().manual_seed(123)
+    new_rank_generator = torch.Generator().manual_seed(456)
+    initial_new_rank_state = new_rank_generator.get_state().clone()
+
+    restored = restore_data_generator_state(
+        new_rank_generator, [saved_generator.get_state()], data_rank=1
+    )
+
+    assert restored is False
+    assert torch.equal(new_rank_generator.get_state(), initial_new_rank_state)
 
 
 def test_packed_corpus_validates_counts_and_samples_deterministically(tmp_path):

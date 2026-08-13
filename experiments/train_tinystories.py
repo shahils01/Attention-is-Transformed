@@ -913,6 +913,26 @@ def prune_old_checkpoints(
         print(json.dumps({"event": "checkpoint_pruned", "step": step, "path": str(path)}))
 
 
+def normalize_data_generator_state(state: torch.Tensor) -> torch.Tensor:
+    """Return a generator state in the format required by set_state()."""
+    return state.detach().to(device="cpu", dtype=torch.uint8)
+
+
+def restore_data_generator_state(
+    data_generator: torch.Generator,
+    states: list[torch.Tensor],
+    data_rank: int,
+) -> bool:
+    """Restore a saved rank state, or retain the seeded state for a new rank."""
+    if data_rank >= len(states):
+        return False
+    state = states[data_rank]
+    if torch.is_tensor(state):
+        state = normalize_data_generator_state(state)
+    data_generator.set_state(state)
+    return True
+
+
 def load_checkpoint(
     path: Path,
     model,
@@ -932,12 +952,26 @@ def load_checkpoint(
         scaler.load_state_dict(checkpoint["scaler_state"])
     data_generator_states = checkpoint.get("data_generator_states")
     if data_generator is not None and data_generator_states is not None:
-        if data_rank >= len(data_generator_states):
-            raise ValueError(
-                f"checkpoint has {len(data_generator_states)} data sampler states, "
-                f"but rank {data_rank} was requested"
+        # Checkpoints are loaded with ``map_location=device`` so that model and
+        # optimizer tensors are immediately available on the training device.
+        # That also moves the CPU generator state to CUDA, but
+        # torch.Generator.set_state() requires a CPU ByteTensor.
+        restored = restore_data_generator_state(
+            data_generator, data_generator_states, data_rank
+        )
+        if not restored:
+            # A checkpoint may be resumed with a larger DDP world size. The
+            # generator was already initialized with seed + rank, giving each
+            # newly added rank an independent deterministic sampling stream.
+            print(
+                json.dumps(
+                    {
+                        "event": "data_generator_initialized_for_new_rank",
+                        "rank": data_rank,
+                        "checkpoint_sampler_states": len(data_generator_states),
+                    }
+                )
             )
-        data_generator.set_state(data_generator_states[data_rank])
     elif (
         data_generator is not None
         and data_rank == 0
@@ -945,7 +979,10 @@ def load_checkpoint(
     ):
         # Backward compatibility with single-state checkpoints created before
         # per-rank DDP sampler state was recorded.
-        data_generator.set_state(checkpoint["data_generator_state"])
+        generator_state = checkpoint["data_generator_state"]
+        if torch.is_tensor(generator_state):
+            generator_state = normalize_data_generator_state(generator_state)
+        data_generator.set_state(generator_state)
     step = int(checkpoint.get("step", 0))
     print(json.dumps({"event": "checkpoint_loaded", "step": step, "path": str(path)}))
     return step
