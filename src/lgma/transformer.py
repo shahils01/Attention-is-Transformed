@@ -75,6 +75,9 @@ def build_attention(
     learn_head_temperature: bool = False,
     value_transform: str = "none",
     num_base_heads: int = 1,
+    fuse_base_qkv: bool = False,
+    fold_value_transform_into_output: bool = False,
+    sdpa_gqa_mode: str = "auto",
 ) -> nn.Module:
     if attention_type in {"mha", "reduced_mha"}:
         return StandardMultiheadAttention(
@@ -189,6 +192,9 @@ def build_attention(
             learn_head_temperature=learn_head_temperature,
             value_transform=value_transform,
             num_base_heads=num_base_heads,
+            fuse_base_qkv=fuse_base_qkv,
+            fold_value_transform_into_output=fold_value_transform_into_output,
+            sdpa_gqa_mode=sdpa_gqa_mode,
         )
     raise ValueError(f"unsupported attention_type: {attention_type}")
 
@@ -223,6 +229,9 @@ class TransformerBlock(nn.Module):
         learn_head_temperature: bool = False,
         value_transform: str = "none",
         num_base_heads: int = 1,
+        fuse_base_qkv: bool = False,
+        fold_value_transform_into_output: bool = False,
+        sdpa_gqa_mode: str = "auto",
     ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
@@ -253,6 +262,9 @@ class TransformerBlock(nn.Module):
             learn_head_temperature=learn_head_temperature,
             value_transform=value_transform,
             num_base_heads=num_base_heads,
+            fuse_base_qkv=fuse_base_qkv,
+            fold_value_transform_into_output=fold_value_transform_into_output,
+            sdpa_gqa_mode=sdpa_gqa_mode,
         )
         self.norm2 = nn.LayerNorm(d_model)
         hidden = mlp_ratio * d_model
@@ -318,6 +330,9 @@ class TinyTransformerLM(nn.Module):
         learn_head_temperature: bool = False,
         value_transform: str = "none",
         num_base_heads: int = 1,
+        fuse_base_qkv: bool = False,
+        fold_value_transform_into_output: bool = False,
+        sdpa_gqa_mode: str = "auto",
     ) -> None:
         super().__init__()
         if vocab_size <= 0:
@@ -358,6 +373,9 @@ class TinyTransformerLM(nn.Module):
                     learn_head_temperature=learn_head_temperature,
                     value_transform=value_transform,
                     num_base_heads=num_base_heads,
+                    fuse_base_qkv=fuse_base_qkv,
+                    fold_value_transform_into_output=fold_value_transform_into_output,
+                    sdpa_gqa_mode=sdpa_gqa_mode,
                 )
                 for _ in range(num_layers)
             ]

@@ -581,6 +581,174 @@ def test_multibase_sdpa_matches_explicit_path_without_dropout_or_masks():
     assert torch.allclose(y_explicit, y_sdpa, atol=1e-5)
 
 
+def _run_forward_backward(layer, x, upstream):
+    output = layer(x)
+    (output * upstream).sum().backward()
+    gradients = {
+        name: parameter.grad.detach().clone()
+        for name, parameter in layer.named_parameters()
+    }
+    return output.detach(), x.grad.detach().clone(), gradients
+
+
+def test_checkpoint_compatible_fused_base_qkv_matches_legacy_forward_and_backward():
+    torch.manual_seed(7)
+    legacy = LieGeneratedMetricAttention(
+        32,
+        num_heads=4,
+        head_dim=8,
+        num_generators=3,
+        num_base_heads=2,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        dropout=0.0,
+        use_sdpa=False,
+    )
+    optimized = LieGeneratedMetricAttention(
+        32,
+        num_heads=4,
+        head_dim=8,
+        num_generators=3,
+        num_base_heads=2,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        dropout=0.0,
+        use_sdpa=False,
+        fuse_base_qkv=True,
+    )
+    optimized.load_state_dict(legacy.state_dict())
+    assert optimized.state_dict().keys() == legacy.state_dict().keys()
+
+    input_data = torch.randn(2, 6, 32)
+    upstream = torch.randn(2, 6, 32)
+    legacy_result = _run_forward_backward(
+        legacy, input_data.detach().clone().requires_grad_(True), upstream
+    )
+    optimized_result = _run_forward_backward(
+        optimized, input_data.detach().clone().requires_grad_(True), upstream
+    )
+
+    assert torch.allclose(legacy_result[0], optimized_result[0], atol=1e-6, rtol=1e-5)
+    assert torch.allclose(legacy_result[1], optimized_result[1], atol=1e-6, rtol=1e-5)
+    for name in legacy_result[2]:
+        assert torch.allclose(
+            legacy_result[2][name], optimized_result[2][name], atol=1e-5, rtol=1e-4
+        ), name
+
+
+def test_folded_value_output_projection_matches_legacy_forward_and_backward():
+    torch.manual_seed(11)
+    legacy = LieGeneratedMetricAttention(
+        32,
+        num_heads=4,
+        head_dim=8,
+        num_generators=3,
+        num_base_heads=2,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        dropout=0.0,
+        use_sdpa=False,
+    )
+    optimized = LieGeneratedMetricAttention(
+        32,
+        num_heads=4,
+        head_dim=8,
+        num_generators=3,
+        num_base_heads=2,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        dropout=0.0,
+        use_sdpa=False,
+        fold_value_transform_into_output=True,
+    )
+    optimized.load_state_dict(legacy.state_dict())
+
+    input_data = torch.randn(2, 6, 32)
+    upstream = torch.randn(2, 6, 32)
+    legacy_result = _run_forward_backward(
+        legacy, input_data.detach().clone().requires_grad_(True), upstream
+    )
+    optimized_result = _run_forward_backward(
+        optimized, input_data.detach().clone().requires_grad_(True), upstream
+    )
+
+    assert torch.allclose(legacy_result[0], optimized_result[0], atol=1e-6, rtol=1e-5)
+    assert torch.allclose(legacy_result[1], optimized_result[1], atol=1e-6, rtol=1e-5)
+    for name in legacy_result[2]:
+        assert torch.allclose(
+            legacy_result[2][name], optimized_result[2][name], atol=1e-5, rtol=1e-4
+        ), name
+
+
+def test_optimized_execution_resumes_legacy_adam_state_without_migration():
+    torch.manual_seed(19)
+    source = LieGeneratedMetricAttention(
+        16,
+        num_heads=4,
+        head_dim=4,
+        num_generators=2,
+        num_base_heads=2,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        dropout=0.0,
+        use_sdpa=False,
+    )
+    source_optimizer = torch.optim.AdamW(source.parameters(), lr=1e-3)
+    warmup_input = torch.randn(2, 5, 16)
+    source(warmup_input).square().mean().backward()
+    source_optimizer.step()
+
+    model_state = source.state_dict()
+    optimizer_state = source_optimizer.state_dict()
+    legacy = LieGeneratedMetricAttention(
+        16,
+        num_heads=4,
+        head_dim=4,
+        num_generators=2,
+        num_base_heads=2,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        dropout=0.0,
+        use_sdpa=False,
+    )
+    optimized = LieGeneratedMetricAttention(
+        16,
+        num_heads=4,
+        head_dim=4,
+        num_generators=2,
+        num_base_heads=2,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        dropout=0.0,
+        use_sdpa=False,
+        fuse_base_qkv=True,
+        fold_value_transform_into_output=True,
+    )
+    legacy.load_state_dict(model_state)
+    optimized.load_state_dict(model_state)
+    legacy_optimizer = torch.optim.AdamW(legacy.parameters(), lr=1e-3)
+    optimized_optimizer = torch.optim.AdamW(optimized.parameters(), lr=1e-3)
+    legacy_optimizer.load_state_dict(optimizer_state)
+    optimized_optimizer.load_state_dict(optimizer_state)
+
+    step_input = torch.randn(2, 5, 16)
+    for model, optimizer in (
+        (legacy, legacy_optimizer),
+        (optimized, optimized_optimizer),
+    ):
+        optimizer.zero_grad(set_to_none=True)
+        model(step_input).square().mean().backward()
+        optimizer.step()
+
+    for (legacy_name, legacy_parameter), (optimized_name, optimized_parameter) in zip(
+        legacy.named_parameters(), optimized.named_parameters()
+    ):
+        assert legacy_name == optimized_name
+        assert torch.allclose(
+            legacy_parameter, optimized_parameter, atol=1e-6, rtol=1e-5
+        ), legacy_name
+
+
 def test_diagonal_fast_path_matches_dense_diagonal_metric_scores():
     torch.manual_seed(0)
     layer = LieGeneratedMetricAttention(

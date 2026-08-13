@@ -31,6 +31,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--precision", choices=["fp32", "bf16", "fp16"], default="bf16")
     parser.add_argument(
+        "--fuse_base_qkv",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override the checkpoint config with checkpoint-compatible fused base QKV.",
+    )
+    parser.add_argument(
+        "--fold_value_transform_into_output",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override the checkpoint config with folded value/output transforms.",
+    )
+    parser.add_argument(
+        "--sdpa_gqa_mode",
+        choices=["auto", "native", "expand"],
+        default=None,
+    )
+    parser.add_argument("--compile", action="store_true")
+    parser.add_argument(
+        "--compile_mode",
+        choices=[
+            "default",
+            "reduce-overhead",
+            "max-autotune",
+            "max-autotune-no-cudagraphs",
+        ],
+        default="default",
+    )
+    parser.add_argument(
         "--profile_flops",
         action="store_true",
         help=(
@@ -312,12 +340,24 @@ def main() -> None:
         raise SystemExit("--device cuda requested, but CUDA is not available")
 
     device = torch.device(args.device)
+    config_overrides = {
+        key: value
+        for key, value in {
+            "fuse_base_qkv": args.fuse_base_qkv,
+            "fold_value_transform_into_output": args.fold_value_transform_into_output,
+            "sdpa_gqa_mode": args.sdpa_gqa_mode,
+        }.items()
+        if value is not None
+    }
     model, _, _, val_encoded, config, step = load_tinystories_checkpoint(
         checkpoint_path=args.checkpoint,
         device=device,
         data_path=args.data_path,
         val_data_path=args.val_data_path,
+        model_config_overrides=config_overrides,
     )
+    if args.compile:
+        model.compile(backend="inductor", mode=args.compile_mode)
     model_context = int(config["context_length"])
     max_cached_prompt = model_context - args.decode_tokens
     if max_cached_prompt <= 0:
@@ -358,6 +398,9 @@ def main() -> None:
         "device": str(device),
         "precision": args.precision,
         "warmup": args.warmup,
+        "optimized_execution": config_overrides,
+        "compiled": args.compile,
+        "compile_mode": args.compile_mode if args.compile else None,
         "repeats": args.repeats,
         "decode_mode": "prefill_then_kv_cached_autoregressive_decode",
         "profile_flops": args.profile_flops,

@@ -72,6 +72,9 @@ class LieGeneratedMetricAttention(nn.Module):
         learn_head_temperature: bool = False,
         value_transform: str = "none",
         num_base_heads: int = 1,
+        fuse_base_qkv: bool = False,
+        fold_value_transform_into_output: bool = False,
+        sdpa_gqa_mode: str = "auto",
     ) -> None:
         super().__init__()
         if d_model <= 0 or num_heads <= 0 or head_dim <= 0 or num_generators <= 0:
@@ -114,6 +117,8 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError("num_base_heads must be positive")
         if num_heads % num_base_heads != 0:
             raise ValueError("num_heads must be divisible by num_base_heads")
+        if sdpa_gqa_mode not in {"auto", "native", "expand"}:
+            raise ValueError("sdpa_gqa_mode must be one of: auto, native, expand")
 
         self.d_model = d_model
         self.num_heads = num_heads
@@ -144,6 +149,9 @@ class LieGeneratedMetricAttention(nn.Module):
         self.learn_head_temperature = learn_head_temperature
         self.value_transform = value_transform
         self.value_transform_mode = self._resolve_value_transform_mode(value_transform, metric_mode)
+        self.fuse_base_qkv = fuse_base_qkv
+        self.fold_value_transform_into_output = fold_value_transform_into_output
+        self.sdpa_gqa_mode = sdpa_gqa_mode
 
         self.q_proj = nn.Linear(d_model, self.num_base_heads * self.base_dim, bias=bias)
         self.k_proj = nn.Linear(d_model, self.num_base_heads * self.base_dim, bias=bias)
@@ -482,6 +490,21 @@ class LieGeneratedMetricAttention(nn.Module):
         return torch.linalg.matrix_exp(head_generators.float()).to(dtype=head_generators.dtype)
 
     def _project(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.fuse_base_qkv:
+            # Retain the legacy Parameters and state-dict keys so existing model
+            # and optimizer checkpoints remain directly loadable.
+            weight = torch.cat(
+                (self.q_proj.weight, self.k_proj.weight, self.v_proj.weight), dim=0
+            )
+            bias = None
+            if self.q_proj.bias is not None:
+                bias = torch.cat(
+                    (self.q_proj.bias, self.k_proj.bias, self.v_proj.bias), dim=0
+                )
+            qkv = F.linear(x, weight, bias)
+            qk_width = self.num_base_heads * self.base_dim
+            value_width = self.num_base_heads * self.value_dim
+            return torch.split(qkv, (qk_width, qk_width, value_width), dim=-1)
         return self.q_proj(x), self.k_proj(x), self.v_proj(x)
 
     def _reshape_base_qk(self, tensor: torch.Tensor) -> torch.Tensor:
@@ -630,6 +653,37 @@ class LieGeneratedMetricAttention(nn.Module):
             values = values * self.value_scale[None, :, None, :]
         return values
 
+    def _output_projection(self, out_heads: torch.Tensor) -> torch.Tensor:
+        """Apply the value transform and output projection with optional folding.
+
+        For row-vector head outputs ``Z_h`` and transforms ``R_h``,
+        ``(Z_h R_h) W_{O,h} = Z_h (R_h W_{O,h})``. Folding is therefore
+        algebraically exact and preserves all existing Parameter tensors and
+        state-dict keys.
+        """
+        batch, _, seq_len, _ = out_heads.shape
+        if (
+            not self.fold_value_transform_into_output
+            or self.value_transform_mode == "none"
+        ):
+            transformed = self._apply_value_transforms_to_outputs(out_heads)
+            flat = transformed.transpose(1, 2).contiguous().view(
+                batch, seq_len, self.num_heads * self.value_dim
+            )
+            return self.out_proj(flat)
+
+        transforms = self.compute_value_transforms()
+        weight_blocks = self.out_proj.weight.view(
+            self.d_model, self.num_heads, self.value_dim
+        )
+        effective_weight = torch.einsum(
+            "hde,ohe->ohd", transforms, weight_blocks
+        ).reshape(self.d_model, self.num_heads * self.value_dim)
+        flat = out_heads.transpose(1, 2).contiguous().view(
+            batch, seq_len, self.num_heads * self.value_dim
+        )
+        return F.linear(flat, effective_weight, self.out_proj.bias)
+
     def _expand_keys(self, k: torch.Tensor) -> torch.Tensor:
         if k.ndim == 3:
             keys = self._reshape_base_qk(k)
@@ -712,7 +766,6 @@ class LieGeneratedMetricAttention(nn.Module):
         attn = torch.softmax(scores, dim=-1)
         attn = self.attn_dropout(attn)
         out_heads = torch.einsum("bhts,bhsd->bhtd", attn, self._expand_values(v))
-        out_heads = self._apply_value_transforms_to_outputs(out_heads)
         return out_heads, attn
 
     def _sdpa_attention(
@@ -783,6 +836,27 @@ class LieGeneratedMetricAttention(nn.Module):
                 is_causal=is_causal,
                 scale=sdpa_scale,
             )
+        elif self.sdpa_gqa_mode == "expand":
+            out_heads = F.scaled_dot_product_attention(
+                q_metric,
+                self._expand_keys(k_base),
+                self._expand_values(v_base),
+                attn_mask=sdpa_mask,
+                dropout_p=dropout_p,
+                is_causal=is_causal,
+                scale=sdpa_scale,
+            )
+        elif self.sdpa_gqa_mode == "native":
+            out_heads = F.scaled_dot_product_attention(
+                q_metric,
+                k_base,
+                v_base,
+                attn_mask=sdpa_mask,
+                dropout_p=dropout_p,
+                is_causal=is_causal,
+                scale=sdpa_scale,
+                enable_gqa=True,
+            )
         else:
             try:
                 out_heads = F.scaled_dot_product_attention(
@@ -807,7 +881,7 @@ class LieGeneratedMetricAttention(nn.Module):
                     is_causal=is_causal,
                     scale=sdpa_scale,
                 )
-        return self._apply_value_transforms_to_outputs(out_heads)
+        return out_heads
 
     @staticmethod
     def _prepare_sdpa_mask(
@@ -859,10 +933,7 @@ class LieGeneratedMetricAttention(nn.Module):
         else:
             out_heads, attn = self._explicit_attention(q, k, v, attn_mask, key_padding_mask)
 
-        batch, _, seq_len, _ = out_heads.shape
-        out_heads = out_heads.transpose(1, 2).contiguous()
-        out_heads = out_heads.view(batch, seq_len, self.num_heads * self.value_dim)
-        out = self.out_proj(out_heads)
+        out = self._output_projection(out_heads)
         if need_weights and attn is None:
             raise RuntimeError("attention weights unavailable on SDPA path")
         if need_weights and use_cache:

@@ -164,6 +164,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--compile_mode",
+        choices=[
+            "default",
+            "reduce-overhead",
+            "max-autotune",
+            "max-autotune-no-cudagraphs",
+        ],
+        default=None,
+        help="Optional torch.compile optimization mode; only valid with the inductor backend.",
+    )
+    parser.add_argument(
         "--no_ddp",
         action="store_true",
         help="Disable automatic DDP even when launched with torchrun.",
@@ -175,6 +186,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base_dim", type=int, default=None)
     parser.add_argument("--value_dim", type=int, default=None)
     parser.add_argument("--num_base_heads", type=int, default=None)
+    parser.add_argument(
+        "--fuse_base_qkv",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Issue one checkpoint-compatible concatenated base QKV projection.",
+    )
+    parser.add_argument(
+        "--fold_value_transform_into_output",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Fold head-specific value transforms into output-projection blocks.",
+    )
+    parser.add_argument(
+        "--sdpa_gqa_mode",
+        choices=["auto", "native", "expand"],
+        default=None,
+        help="Select native GQA SDPA or temporary K/V expansion for performance testing.",
+    )
     parser.add_argument("--context_length", type=int, default=None)
     parser.add_argument("--num_kv_heads", type=int, default=None)
     parser.add_argument("--dropout", type=float, default=None)
@@ -446,6 +475,9 @@ def effective_attention_config(module) -> dict[str, object]:
         "logit_scale_mode",
         "learn_head_temperature",
         "value_transform",
+        "fuse_base_qkv",
+        "fold_value_transform_into_output",
+        "sdpa_gqa_mode",
     ]
     return {key: getattr(module, key) for key in keys if hasattr(module, key)}
 
@@ -485,6 +517,9 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
         "logit_scale_mode": "sqrt_dim",
         "learn_head_temperature": False,
         "value_transform": "none",
+        "fuse_base_qkv": False,
+        "fold_value_transform_into_output": False,
+        "sdpa_gqa_mode": "auto",
     }
     merged = {**defaults, **config}
 
@@ -516,6 +551,9 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
         "logit_scale_mode": args.logit_scale_mode,
         "learn_head_temperature": args.learn_head_temperature,
         "value_transform": args.value_transform,
+        "fuse_base_qkv": args.fuse_base_qkv,
+        "fold_value_transform_into_output": args.fold_value_transform_into_output,
+        "sdpa_gqa_mode": args.sdpa_gqa_mode,
     }
     for key, value in overrides.items():
         if value is not None:
@@ -1085,27 +1123,8 @@ def main() -> None:
         config = model_config_from_args(args)
         seq_len = int(config["context_length"])
         base_model = TinyTransformerLM(vocab_size=tokenizer.vocab_size, **config).to(device)
-        if args.compile:
-            if not hasattr(base_model, "compile"):
-                raise SystemExit("--compile requires a PyTorch version with torch.compile")
-            # Compile the inner module in place so DDP and checkpoint state_dict keys
-            # continue to refer to the original model rather than an OptimizedModule
-            # wrapper (which prefixes parameters with `_orig_mod`).
-            base_model.compile(backend=args.compile_backend)
-        if ddp_enabled:
-            model = DistributedDataParallel(
-                base_model,
-                device_ids=[local_rank],
-                output_device=local_rank,
-                find_unused_parameters=(
-                    args.metric_diversity_weight != 0.0
-                    or args.induced_metric_diversity_weight != 0.0
-                ),
-            )
-        else:
-            model = base_model
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            base_model.parameters(),
             lr=args.lr,
             weight_decay=args.weight_decay,
         )
@@ -1124,7 +1143,7 @@ def main() -> None:
             output_dir.mkdir(parents=True, exist_ok=True)
         wandb_run = None
         if main_process:
-            first_attn = unwrap_model(model).first_attention
+            first_attn = base_model.first_attention
             wandb_run = init_wandb_run(
                 project=args.wandb_project,
                 entity=args.wandb_entity,
@@ -1142,7 +1161,7 @@ def main() -> None:
                         sequence_length=seq_len,
                         batch_size=args.batch_size,
                     ).__dict__,
-                    "parameters": count_parameters(unwrap_model(model)),
+                    "parameters": count_parameters(base_model),
                     "vocab_size": tokenizer.vocab_size,
                     "data_backend": data_backend,
                     "train_tokens": int(train_encoded.numel()),
@@ -1158,7 +1177,7 @@ def main() -> None:
         if args.resume_checkpoint is not None:
             start_step = load_checkpoint(
                 args.resume_checkpoint,
-                model,
+                base_model,
                 optimizer,
                 scaler,
                 device,
@@ -1167,6 +1186,32 @@ def main() -> None:
             )
         if ddp_enabled:
             dist.barrier()
+
+        # Compile after restoring the checkpoint. This avoids charging lazy
+        # compiler work to checkpoint loading and keeps checkpoint/optimizer
+        # state tied to the original module and Parameter objects.
+        if args.compile:
+            if not hasattr(base_model, "compile"):
+                raise SystemExit("--compile requires a PyTorch version with torch.compile")
+            if args.compile_mode is not None and args.compile_backend != "inductor":
+                raise SystemExit("--compile_mode requires --compile_backend inductor")
+            compile_kwargs: dict[str, object] = {"backend": args.compile_backend}
+            if args.compile_mode is not None:
+                compile_kwargs["mode"] = args.compile_mode
+            base_model.compile(**compile_kwargs)
+
+        if ddp_enabled:
+            model = DistributedDataParallel(
+                base_model,
+                device_ids=[local_rank],
+                output_device=local_rank,
+                find_unused_parameters=(
+                    args.metric_diversity_weight != 0.0
+                    or args.induced_metric_diversity_weight != 0.0
+                ),
+            )
+        else:
+            model = base_model
 
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)

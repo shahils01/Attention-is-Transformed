@@ -55,6 +55,7 @@ def load_tinystories_checkpoint(
     device: torch.device,
     data_path: Path | None = None,
     val_data_path: Path | None = None,
+    model_config_overrides: dict[str, object] | None = None,
 ) -> tuple[TinyTransformerLM, CharTokenizer, torch.Tensor, torch.Tensor, dict[str, object], int]:
     # These are full checkpoints produced by train_tinystories.py, including
     # configuration metadata that is not accepted by weights-only loading.
@@ -68,6 +69,9 @@ def load_tinystories_checkpoint(
     config = checkpoint.get("model_config")
     if not isinstance(config, dict):
         raise SystemExit("checkpoint is missing model_config")
+    config = dict(config)
+    if model_config_overrides:
+        config.update(model_config_overrides)
     model = TinyTransformerLM(vocab_size=tokenizer.vocab_size, **config).to(device)
     state = checkpoint.get("model_state")
     if not isinstance(state, dict):
