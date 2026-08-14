@@ -1,0 +1,75 @@
+{
+  "input": "/Users/shahilshaik/Documents/Attention is Transformed/docs/cv/ACCESS_Advisor_Support_Letter_Draft.docx",
+  "fonts_by_char_count": {
+    "Calibri": 2314
+  },
+  "direct_run_formatting_runs": 20,
+  "direct_paragraph_formatting_paragraphs": 16,
+  "heading_like_paragraphs_not_heading_style": [
+    {
+      "para_index": 4,
+      "text": "Re: Advisor Support for Shahil Shaik\u2019s Explore ACCESS Request",
+      "style": "Normal"
+    }
+  ],
+  "examples": {
+    "direct_paragraph_formatting": [
+      {
+        "para_index": 1,
+        "text": "July 27, 2026",
+        "style": "Normal"
+      },
+      {
+        "para_index": 2,
+        "text": "ACCESS Allocations Review Committee",
+        "style": "Normal"
+      },
+      {
+        "para_index": 3,
+        "text": "Advanced Cyberinfrastructure Coordination Ecosystem: Services & Support (ACCESS)",
+        "style": "Normal"
+      },
+      {
+        "para_index": 4,
+        "text": "Re: Advisor Support for Shahil Shaik\u2019s Explore ACCESS Request",
+        "style": "Normal"
+      },
+      {
+        "para_index": 5,
+        "text": "Dear ACCESS Allocations Review Committee:",
+        "style": "Normal"
+      }
+    ],
+    "direct_run_formatting": [
+      {
+        "para_index": 1,
+        "run_text": "July 27, 2026",
+        "style": "Normal"
+      },
+      {
+        "para_index": 2,
+        "run_text": "ACCESS Allocations Review Committee",
+        "style": "Normal"
+      },
+      {
+        "para_index": 3,
+        "run_text": "Advanced Cyberinfrastructure Coordination Ecosystem: Services & Support (ACCESS)",
+        "style": "Normal"
+      },
+      {
+        "para_index": 4,
+        "run_text": "Re: Advisor Support for Shahil Shaik\u2019s Explore ACCESS Request",
+        "style": "Normal"
+      },
+      {
+        "para_index": 5,
+        "run_text": "Dear ACCESS Allocations Review Committee:",
+        "style": "Normal"
+      }
+    ]
+  },
+  "notes": [
+    "Direct formatting is not always wrong, but it often causes inconsistent output when templates change.",
+    "Heading-like paragraphs not using Heading styles can break TOC and accessibility."
+  ]
+}
