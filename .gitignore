@@ -1,7 +1,22 @@
-# Donot track pyc files
-*.pyc
-outputs
-logs
+# Python bytecode and caches
+*.py[cod]
+__pycache__/
+
+# Runtime and generated output directories
+/output/
+/outputs/
+/logs/
+/tmp/
+
+# OS metadata
+.DS_Store
+
+# Generated document artifacts; retain source .md, .tex, and build scripts.
+/docs/**/*.docx
+/docs/**/*.pdf
+/docs/**/*.zip
+/docs/**/rendered/
+/docs/**/latex-build/
 
 # OSPool job secret; create only on the AP40 access point.
 ospool/.wandb_api_key
