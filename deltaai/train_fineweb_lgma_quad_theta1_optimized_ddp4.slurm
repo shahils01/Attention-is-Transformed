@@ -7,20 +7,19 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256g
 #SBATCH --gpus-per-node=4
-#SBATCH --time=36:00:00
-#SBATCH --output=/work/hdd/bicn/anayak2/logs/%x_%j.out
-#SBATCH --error=/work/hdd/bicn/anayak2/logs/%x_%j.err
-
+#SBATCH --time=48:00:00
+#SBATCH --output=/work/hdd/biad/sshaik4/logs/%x_%j.out
+#SBATCH --error=/work/hdd/biad/sshaik4/logs/%x_%j.err
 set -euo pipefail
 
-PROJECT_DIR=/work/hdd/bicn/anayak2
+PROJECT_DIR=/work/hdd/biad/sshaik4
 PACKED_DATA=${PROJECT_DIR}/lgma_data/fineweb_edu_10BT_packed_v1
 VENV_DIR=${PROJECT_DIR}/venvs/lgma
 CODE_SNAPSHOT=${CODE_SNAPSHOT:?Set CODE_SNAPSHOT to the immutable source snapshot}
 EXPECTED_COMMIT=${EXPECTED_COMMIT:-7aa685755cb7751b9cdd1e8a623060a4721aed8a}
 TOTAL_STEPS=9512
 SEED=${SEED:-0}
-RUN_NAME=fineweb_edu_10BT_lgma_quad_b4_h16_g8_theta1_optimized_gh200_ddp4_gb2048_seed${SEED}_v1
+RUN_NAME=fineweb_edu_10BT_lgma_quad_b4_h16_g8_theta1_noSoftmaxMixing_optimized_gh200_ddp4_gb2048_seed${SEED}_v1
 OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/${RUN_NAME}
 
 module load python/miniforge3_pytorch/2.12.0
@@ -105,6 +104,8 @@ torchrun --standalone --nproc_per_node=4 experiments/train_text_lm.py \
   --precision bf16 \
   --seed "${SEED}" \
   --attention lgma_quad \
+  --theta_init_scale 0.3535533905932738 \
+  --generator_mixing none \
   --num_heads 16 \
   --num_base_heads 4 \
   --num_generators 8 \
