@@ -4,10 +4,39 @@ from pathlib import Path
 import torch
 
 from lgma.synthetic import make_synthetic_batch
-from lgma.transformer import TinyTransformerLM, tiny_lm_from_config
+from lgma.transformer import TinyTransformerLM, build_attention, tiny_lm_from_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_lgma_presets_default_to_random_sphere_and_respect_explicit_circle():
+    for attention_type in (
+        "lgma_v2",
+        "lgma_residual",
+        "lgma_quad",
+        "lgma_value_diag",
+        "lgma_multibase",
+        "lgma_multibase_value_diag",
+    ):
+        layer = build_attention(
+            attention_type=attention_type,
+            d_model=32,
+            num_heads=4,
+            head_dim=8,
+            num_generators=4,
+        )
+        assert layer.theta_init == "random_sphere"
+
+    circle_layer = build_attention(
+        attention_type="lgma_residual",
+        d_model=32,
+        num_heads=4,
+        head_dim=8,
+        num_generators=4,
+        theta_init="circle",
+    )
+    assert circle_layer.theta_init == "circle"
 
 
 def test_synthetic_batches_have_expected_shapes():

@@ -132,17 +132,14 @@ def build_attention(
             metric_mode = "exp"
             logit_scale_mode = "rms_metric"
             learn_head_temperature = True
-            theta_init = "circle"
         elif attention_type == "lgma_residual":
             metric_mode = "residual"
             logit_scale_mode = "rms_metric"
             learn_head_temperature = True
-            theta_init = "circle"
         elif attention_type == "lgma_quad":
             metric_mode = "quadratic"
             logit_scale_mode = "rms_metric"
             learn_head_temperature = True
-            theta_init = "circle"
         elif attention_type == "lgma_unconstrained":
             metric_mode = "unconstrained"
             logit_scale_mode = "rms_metric"
@@ -151,20 +148,17 @@ def build_attention(
             metric_mode = "exp"
             logit_scale_mode = "rms_metric"
             learn_head_temperature = True
-            theta_init = "circle"
             value_transform = "diag"
         elif attention_type == "lgma_multibase":
             metric_mode = "exp"
             logit_scale_mode = "rms_metric"
             learn_head_temperature = True
-            theta_init = "circle"
             if num_base_heads == 1:
                 num_base_heads = 2
         elif attention_type == "lgma_multibase_value_diag":
             metric_mode = "exp"
             logit_scale_mode = "rms_metric"
             learn_head_temperature = True
-            theta_init = "circle"
             value_transform = "diag"
             if num_base_heads == 1:
                 num_base_heads = 2
