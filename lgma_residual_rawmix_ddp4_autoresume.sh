@@ -18,7 +18,7 @@ source activate llava_video
 set -uo pipefail
 
 REPO_DIR=/home/shahils/Desktop/gitBackupRepo/Attention-is-Transformed
-EXPECTED_COMMIT=bd6c5c841e84d73a1da15a76aa85ede1497e9795
+REQUIRED_COMMIT=f9a7bc88b6b3f6888b9406a80b7f85c04a9fbefe
 DATA_DIR=/scratch/shahils/lgma_data/tinystory
 OUTPUT_DIR=/scratch/shahils/lgma_runs/tinystories_lgma_residual_b4_h16_g8_mixnone_theta035_ddp4_gb2048
 TOTAL_STEPS=250000
@@ -32,8 +32,8 @@ cd "${REPO_DIR}"
 mkdir -p "${OUTPUT_DIR}"
 
 actual_commit=$(git rev-parse HEAD)
-if [[ "${actual_commit}" != "${EXPECTED_COMMIT}" ]]; then
-  echo "Source revision mismatch: expected ${EXPECTED_COMMIT}, found ${actual_commit}" >&2
+if ! git merge-base --is-ancestor "${REQUIRED_COMMIT}" "${actual_commit}"; then
+  echo "Source revision ${actual_commit} does not contain required commit ${REQUIRED_COMMIT}" >&2
   exit 2
 fi
 
@@ -111,6 +111,7 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
   --value_beta 1.0 \
   --no-stabilize_generators \
   --generator_mixing none \
+  --theta_init random_sphere \
   --theta_init_scale 0.3535533905932738 \
   --context_length 512 \
   --dropout 0.1 \
