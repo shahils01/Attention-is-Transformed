@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=256g
+#SBATCH --mem=500g
 #SBATCH --gpus-per-node=4
 #SBATCH --time=48:00:00
 #SBATCH --output=/work/hdd/biad/sshaik4/logs/%x_%j.out
