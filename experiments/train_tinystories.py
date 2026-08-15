@@ -59,6 +59,7 @@ ATTENTION_TYPES = [
     "lgma_multibase_value_diag",
 ]
 GENERATOR_TYPES = ["full", "diagonal", "symmetric"]
+GENERATOR_MIXING_MODES = ["softmax", "none"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,6 +85,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--attention", choices=ATTENTION_TYPES, default=None)
     parser.add_argument("--generator_type", choices=GENERATOR_TYPES, default=None)
+    parser.add_argument(
+        "--generator_mixing",
+        choices=GENERATOR_MIXING_MODES,
+        default=None,
+        help="Map per-head generator coordinates with softmax or use them directly.",
+    )
     parser.add_argument("--num_generators", type=int, default=None)
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=16)
@@ -463,6 +470,7 @@ def effective_attention_config(module) -> dict[str, object]:
         "generated_heads_per_base",
         "num_generators",
         "generator_type",
+        "generator_mixing",
         "stabilize_generators",
         "normalize_generators",
         "head_generator_symmetric_cap",
@@ -496,6 +504,7 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
         "attention_type": "lgma",
         "num_generators": 4,
         "generator_type": "full",
+        "generator_mixing": "softmax",
         "context_length": 128,
         "dropout": 0.0,
         "num_kv_heads": None,
@@ -526,6 +535,7 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
     overrides = {
         "attention_type": args.attention,
         "generator_type": args.generator_type,
+        "generator_mixing": args.generator_mixing,
         "num_generators": args.num_generators,
         "d_model": args.d_model,
         "num_layers": args.num_layers,

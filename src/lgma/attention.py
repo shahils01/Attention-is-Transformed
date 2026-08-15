@@ -53,6 +53,7 @@ class LieGeneratedMetricAttention(nn.Module):
         dropout: float = 0.0,
         bias: bool = False,
         generator_type: str = "full",
+        generator_mixing: str = "softmax",
         use_sdpa: bool = True,
         causal: bool = False,
         stabilize_generators: bool = True,
@@ -81,6 +82,8 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError("d_model, num_heads, head_dim, and num_generators must be positive")
         if generator_type not in {"full", "diagonal", "symmetric"}:
             raise ValueError(f"unsupported generator_type: {generator_type}")
+        if generator_mixing not in {"softmax", "none"}:
+            raise ValueError(f"unsupported generator_mixing: {generator_mixing}")
         if metric_mode not in {"exp", "residual", "quadratic", "unconstrained"}:
             raise ValueError(f"unsupported metric_mode: {metric_mode}")
         if theta_init not in {"random_sphere", "circle"}:
@@ -132,6 +135,7 @@ class LieGeneratedMetricAttention(nn.Module):
         self.num_generators = num_generators
         self.dropout = dropout
         self.generator_type = generator_type
+        self.generator_mixing = generator_mixing
         self.use_sdpa = use_sdpa
         self.causal = causal
         self.stabilize_generators = stabilize_generators
@@ -367,16 +371,21 @@ class LieGeneratedMetricAttention(nn.Module):
         return symmetric.float().norm(dim=(-2, -1))
 
     def metric_theta_weights(self) -> torch.Tensor:
-        """Return simplex-normalized generator weights for each metric head."""
+        """Return configured generator coefficients for each metric head."""
         if not hasattr(self, "theta"):
             raise AttributeError("unconstrained metric mode does not use theta")
-        return torch.softmax(self.theta, dim=-1)
+        return self._generator_mixing_weights(self.theta)
 
     def value_theta_weights(self) -> torch.Tensor:
-        """Return simplex-normalized generator weights for each value head."""
+        """Return configured generator coefficients for each value head."""
         if not hasattr(self, "value_theta"):
             raise AttributeError("value transform mode does not use value_theta")
-        return torch.softmax(self.value_theta, dim=-1)
+        return self._generator_mixing_weights(self.value_theta)
+
+    def _generator_mixing_weights(self, coordinates: torch.Tensor) -> torch.Tensor:
+        if self.generator_mixing == "softmax":
+            return torch.softmax(coordinates, dim=-1)
+        return coordinates
 
     def _clip_metric_singular_values(self, metrics: torch.Tensor) -> torch.Tensor:
         if self.metric_clip_min is None and self.metric_clip_max is None:

@@ -77,6 +77,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_base_heads", type=int, default=1)
     parser.add_argument("--num_generators", type=int, default=4)
     parser.add_argument("--generator_type", choices=GENERATOR_TYPES, default="full")
+    parser.add_argument(
+        "--generator_mixing",
+        choices=("softmax", "none"),
+        default="softmax",
+        help="Map per-head generator coordinates with softmax or use them directly.",
+    )
     parser.add_argument("--theta_init_scale", type=float, default=0.02)
     parser.add_argument("--generator_init_scale", type=float, default=0.02)
     parser.add_argument(
@@ -251,6 +257,7 @@ def make_config(args: argparse.Namespace) -> VLAPolicyConfig:
         attention=args.attention,
         num_generators=args.num_generators,
         generator_type=args.generator_type,
+        generator_mixing=args.generator_mixing,
         theta_init_scale=args.theta_init_scale,
         generator_init_scale=args.generator_init_scale,
         stabilize_generators=args.stabilize_generators,

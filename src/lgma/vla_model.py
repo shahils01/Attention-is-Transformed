@@ -43,6 +43,7 @@ class VLAPolicyConfig:
     attention: VLAAttentionType = "mha"
     num_generators: int = 4
     generator_type: str = "full"
+    generator_mixing: str = "softmax"
     theta_init_scale: float = 0.02
     generator_init_scale: float = 0.02
     stabilize_generators: bool = True
@@ -174,6 +175,7 @@ class VLATransformerPolicy(nn.Module):
                     attention_type=config.attention,  # type: ignore[arg-type]
                     num_generators=config.num_generators,
                     generator_type=config.generator_type,
+                    generator_mixing=config.generator_mixing,
                     dropout=config.dropout,
                     mlp_ratio=config.mlp_ratio,
                     causal=False,

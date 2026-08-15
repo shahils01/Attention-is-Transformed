@@ -91,6 +91,62 @@ def test_lgma_multibase_requires_heads_divisible_by_bases():
         raise AssertionError("expected ValueError")
 
 
+def test_generator_mixing_softmax_default_and_none_are_configurable():
+    softmax_layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        num_generators=3,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        use_sdpa=False,
+    )
+    raw_layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        num_generators=3,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        generator_mixing="none",
+        use_sdpa=False,
+    )
+    raw_layer.load_state_dict(softmax_layer.state_dict())
+
+    coordinates = torch.tensor([[1.0, -2.0, 0.5], [-0.25, 0.75, 2.0]])
+    with torch.no_grad():
+        softmax_layer.theta.copy_(coordinates)
+        softmax_layer.value_theta.copy_(coordinates)
+        raw_layer.theta.copy_(coordinates)
+        raw_layer.value_theta.copy_(coordinates)
+
+    assert softmax_layer.generator_mixing == "softmax"
+    assert torch.allclose(
+        softmax_layer.metric_theta_weights(), torch.softmax(coordinates, dim=-1)
+    )
+    assert torch.allclose(
+        softmax_layer.value_theta_weights(), torch.softmax(coordinates, dim=-1)
+    )
+    assert torch.equal(raw_layer.metric_theta_weights(), coordinates)
+    assert torch.equal(raw_layer.value_theta_weights(), coordinates)
+    assert softmax_layer.state_dict().keys() == raw_layer.state_dict().keys()
+
+
+def test_generator_mixing_rejects_unknown_mode():
+    try:
+        LieGeneratedMetricAttention(
+            16,
+            num_heads=2,
+            head_dim=4,
+            num_generators=2,
+            generator_mixing="signed_l1",
+        )
+    except ValueError as exc:
+        assert "generator_mixing" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_lgma_backward_has_finite_gradients():
     torch.manual_seed(0)
     layer = LieGeneratedMetricAttention(64, 8, 8, 4, generator_type="full")

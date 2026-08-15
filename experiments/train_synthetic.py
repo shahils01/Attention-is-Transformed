@@ -73,6 +73,12 @@ def parse_args() -> argparse.Namespace:
         default="lgma",
     )
     parser.add_argument("--generator_type", choices=["full", "diagonal", "symmetric"], default="full")
+    parser.add_argument(
+        "--generator_mixing",
+        choices=["softmax", "none"],
+        default="softmax",
+        help="Map per-head generator coordinates with softmax or use them directly.",
+    )
     parser.add_argument("--num_generators", type=int, default=2)
     parser.add_argument(
         "--stabilize_generators",
@@ -247,6 +253,7 @@ def effective_attention_config(module) -> dict[str, object]:
         "generated_heads_per_base",
         "num_generators",
         "generator_type",
+        "generator_mixing",
         "stabilize_generators",
         "normalize_generators",
         "head_generator_symmetric_cap",
@@ -508,6 +515,7 @@ def main() -> None:
         attention_type=args.attention,
         num_generators=args.num_generators if args.attention in LGMA_ATTENTION_TYPES else 0,
         generator_type=args.generator_type,
+        generator_mixing=args.generator_mixing,
         context_length=args.seq_len,
         causal=args.causal,
         theta_init_scale=args.theta_init_scale,
