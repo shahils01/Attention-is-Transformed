@@ -4,10 +4,10 @@
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=256g
 #SBATCH --gpus-per-node=4
-#SBATCH --time=12:00:00
+#SBATCH --time=40:00:00
 #SBATCH --output=/work/hdd/biad/sshaik4/logs/%x_%j.out
 #SBATCH --error=/work/hdd/biad/sshaik4/logs/%x_%j.err
 
@@ -22,7 +22,7 @@ TOTAL_STEPS=250000
 
 module load python/miniforge3_pytorch/2.12.0
 source "${VENV_DIR}/bin/activate"
-export OMP_NUM_THREADS=8
+export OMP_NUM_THREADS=2
 export WANDB_RUN_ID=tinystory-collaborative-h16-gh200-ddp4-gb2048-20260808
 export WANDB_RESUME=allow
 
