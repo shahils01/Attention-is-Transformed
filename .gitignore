@@ -12,6 +12,7 @@ __pycache__/
 .DS_Store
 
 # Generated document artifacts; retain source .md, .tex, and build scripts.
+docs/
 /docs/**/*.docx
 /docs/**/*.pdf
 /docs/**/*.zip
