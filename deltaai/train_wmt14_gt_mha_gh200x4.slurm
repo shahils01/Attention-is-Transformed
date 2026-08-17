@@ -70,7 +70,7 @@ torchrun --standalone --nproc_per_node=4 experiments/train_wmt14.py \
   --save-every 5000 \
   --wandb-project wmt14 \
   --wandb-entity i2rLAB \
-  --wandb-run-name wmt14-gqa-base-gh200x4 \
+  --wandb-run-name wmt14-gt-mha-base-gh200x4 \
   --wandb-group wmt14 \
-  --wandb-tags wmt14,gqa,transformer-base,60m,gh200,ddp4,tokens4096,gb32768 \
+  --wandb-tags wmt14,gt-mha,transformer-base,60m,gh200,ddp4,tokens4096,gb32768 \
   --wandb-mode online
