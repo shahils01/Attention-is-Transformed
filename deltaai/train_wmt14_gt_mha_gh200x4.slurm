@@ -18,7 +18,7 @@ set -euo pipefail
 REPO_DIR=/work/hdd/bicn/anayak2/repos/Attention-is-Transformed
 PROJECT_DIR=/work/hdd/bicn/anayak2
 DATA_DIR=${PROJECT_DIR}/lgma_data/wmt14_en_de/processed_spm32k
-OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/wmt14_gqa_base_gh200x4
+OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/wmt14_gt_mha_residual_gh200x4
 VENV_DIR=${PROJECT_DIR}/venvs/lgma
 
 module load python/miniforge3_pytorch/2.12.0
@@ -38,14 +38,14 @@ torchrun --standalone --nproc_per_node=4 experiments/train_wmt14.py \
   --num-encoder-layers 6 \
   --num-decoder-layers 6 \
   --num-heads 8 \
-  --num_base_heads 4 \
-  --num_generators 8 \
-  --value_transform lie \
-  --metric_beta 1.0 \
-  --value_beta 1.0 \
+  --num-base-heads 4 \
+  --num-generators 8 \
+  --value-transform lie \
+  --metric-beta 1.0 \
+  --value-beta 1.0 \
+  --generator-mixing softmax \
   --induced_metric_diversity_weight 0.0 \
   --metric_diversity_weight 0.0 \
-  --generator_mixing softmax \
   --no-stabilize_generators \
   --fuse_base_qkv \
   --fold_value_transform_into_output \
