@@ -24,8 +24,8 @@ class IndexedTokenSequences:
 
     def __init__(self, prefix: str | Path) -> None:
         prefix = Path(prefix)
-        self.tokens = np.memmap(prefix.with_suffix('.bin'), dtype=np.uint32, mode='r')
-        self.offsets = np.load(prefix.with_suffix('.idx.npy'), mmap_mode='r')
+        self.tokens = np.memmap(Path(f'{prefix}.bin'), dtype=np.uint32, mode='r')
+        self.offsets = np.load(Path(f'{prefix}.idx.npy'), mmap_mode='r')
         if self.offsets.ndim != 1 or len(self.offsets) < 2:
             raise ValueError(f'invalid sequence index: {prefix}')
 
@@ -50,6 +50,70 @@ class WMT14Dataset(Dataset):
 
     def __getitem__(self, index: int) -> tuple[np.ndarray, np.ndarray]:
         return self.source[index], self.target[index]
+
+    @property
+    def source_lengths(self) -> np.ndarray:
+        return np.diff(self.source.offsets).astype(np.int64, copy=False)
+
+    @property
+    def target_lengths(self) -> np.ndarray:
+        return np.diff(self.target.offsets).astype(np.int64, copy=False)
+
+
+class TokenBucketBatcher:
+    """Randomized length buckets with independent source/target padded-token caps.
+
+    Each emitted list of indices satisfies ``len(batch) * max(src_len)`` and
+    ``len(batch) * max(tgt_len)`` <= ``tokens_per_batch`` after truncation.
+    This is the same useful interpretation as a translation ``max_tokens``
+    setting: it bounds padded work/memory, not merely the unpadded average.
+    """
+
+    def __init__(self, dataset: WMT14Dataset, *, tokens_per_batch: int, max_source_length: int,
+                 max_target_length: int, seed: int, rank: int = 0, world_size: int = 1,
+                 bucket_size: int = 4096) -> None:
+        if tokens_per_batch <= 0 or bucket_size <= 0:
+            raise ValueError('tokens_per_batch and bucket_size must be positive')
+        self.dataset, self.tokens_per_batch = dataset, tokens_per_batch
+        self.source_lengths = np.minimum(dataset.source_lengths, max_source_length)
+        self.target_lengths = np.minimum(dataset.target_lengths, max_target_length)
+        if int(np.maximum(self.source_lengths, self.target_lengths).max()) > tokens_per_batch:
+            raise ValueError('tokens_per_batch is smaller than an individual truncated sequence')
+        self.rank, self.world_size, self.bucket_size = rank, world_size, bucket_size
+        self.generator = torch.Generator().manual_seed(seed)
+        self.batches: list[list[int]] = []
+        self.position = 0
+        self._new_epoch()
+
+    def _new_epoch(self) -> None:
+        # Sharding before bucket formation gives each DDP rank distinct pairs.
+        order = torch.randperm(len(self.dataset), generator=self.generator).numpy()[self.rank::self.world_size]
+        batches: list[list[int]] = []
+        for start in range(0, len(order), self.bucket_size):
+            bucket = order[start:start + self.bucket_size]
+            bucket = bucket[np.argsort(np.maximum(self.source_lengths[bucket], self.target_lengths[bucket]), kind='stable')]
+            current: list[int] = []
+            max_source = max_target = 0
+            for index in bucket.tolist():
+                source = max(max_source, int(self.source_lengths[index]))
+                target = max(max_target, int(self.target_lengths[index]))
+                if current and (source * (len(current) + 1) > self.tokens_per_batch or target * (len(current) + 1) > self.tokens_per_batch):
+                    batches.append(current)
+                    current, max_source, max_target = [], 0, 0
+                    source, target = int(self.source_lengths[index]), int(self.target_lengths[index])
+                current.append(index); max_source, max_target = source, target
+            if current:
+                batches.append(current)
+        permutation = torch.randperm(len(batches), generator=self.generator).tolist()
+        self.batches = [batches[index] for index in permutation]
+        self.position = 0
+
+    def next_batch(self) -> list[int]:
+        if self.position >= len(self.batches):
+            self._new_epoch()
+        batch = self.batches[self.position]
+        self.position += 1
+        return batch
 
 
 @dataclass
@@ -117,13 +181,16 @@ class DecoderLayer(nn.Module):
 
 
 class WMT14Transformer(nn.Module):
-    def __init__(self, *, vocab_size: int, d_model: int = 512, ffn_dim: int = 2048, num_encoder_layers: int = 6, num_decoder_layers: int = 6, num_heads: int = 8, head_dim: int = 64, attention_type: AttentionType = 'mha', dropout: float = 0.1, max_source_length: int = 256, max_target_length: int = 256, pad_id: int = 3, **attention_kwargs) -> None:
+    def __init__(self, *, vocab_size: int, d_model: int = 512, ffn_dim: int = 2048, num_encoder_layers: int = 6, num_decoder_layers: int = 6, num_heads: int = 8, head_dim: int = 64, attention_type: AttentionType = 'mha', dropout: float = 0.1, max_source_length: int = 256, max_target_length: int = 256, pad_id: int = 3, share_all_embeddings: bool = False, **attention_kwargs) -> None:
         super().__init__()
         if d_model != num_heads * head_dim:
             raise ValueError('d_model must equal num_heads * head_dim for the cross-attention baseline')
         self.pad_id, self.d_model = pad_id, d_model
         self.source_embedding = nn.Embedding(vocab_size, d_model, padding_idx=pad_id)
-        self.target_embedding = nn.Embedding(vocab_size, d_model, padding_idx=pad_id)
+        # WMT14 assets use one joint EN–DE SentencePiece vocabulary, so full
+        # embedding sharing is valid and matches the usual Transformer-base
+        # parameter budget.
+        self.target_embedding = self.source_embedding if share_all_embeddings else nn.Embedding(vocab_size, d_model, padding_idx=pad_id)
         self.source_positions = nn.Embedding(max_source_length, d_model)
         self.target_positions = nn.Embedding(max_target_length, d_model)
         self.dropout = nn.Dropout(dropout)
@@ -133,6 +200,8 @@ class WMT14Transformer(nn.Module):
         self.decoder = nn.ModuleList([DecoderLayer(attention(True), d_model, num_heads, ffn_dim, dropout) for _ in range(num_decoder_layers)])
         self.encoder_norm, self.decoder_norm = nn.LayerNorm(d_model), nn.LayerNorm(d_model)
         self.output_projection = nn.Linear(d_model, vocab_size, bias=False)
+        if share_all_embeddings:
+            self.output_projection.weight = self.source_embedding.weight
 
     @staticmethod
     def _embed(ids: torch.Tensor, token: nn.Embedding, position: nn.Embedding, dropout: nn.Module) -> torch.Tensor:
@@ -157,3 +226,26 @@ class WMT14Transformer(nn.Module):
     def loss(self, batch: TranslationBatch) -> torch.Tensor:
         logits = self(batch.source_ids, batch.decoder_input_ids, batch.source_padding_mask)
         return F.cross_entropy(logits.flatten(0, 1), batch.target_ids.flatten(), ignore_index=self.pad_id)
+
+    @torch.no_grad()
+    def greedy_decode(self, source_ids: torch.Tensor, *, bos_id: int, eos_id: int, max_length: int) -> torch.Tensor:
+        """Batched greedy decoding used for smoke tests and live monitoring.
+
+        Final WMT14 reporting will use beam search; keeping greedy decoding
+        separately labelled prevents accidental comparison of the two metrics.
+        """
+        memory, source_padding = self.encode(source_ids)
+        generated = torch.full((source_ids.shape[0], 1), bos_id, dtype=torch.long, device=source_ids.device)
+        finished = torch.zeros(source_ids.shape[0], dtype=torch.bool, device=source_ids.device)
+        for _ in range(max_length - 1):
+            target_padding = generated.eq(self.pad_id)
+            x = self._embed(generated, self.target_embedding, self.target_positions, self.dropout)
+            for layer in self.decoder:
+                x = layer(x, memory, target_padding, source_padding)
+            next_id = self.output_projection(self.decoder_norm(x[:, -1])).argmax(dim=-1)
+            next_id = torch.where(finished, torch.full_like(next_id, self.pad_id), next_id)
+            generated = torch.cat((generated, next_id[:, None]), dim=1)
+            finished |= next_id.eq(eos_id)
+            if bool(finished.all()):
+                break
+        return generated

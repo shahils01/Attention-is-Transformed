@@ -77,8 +77,10 @@ def train_tokenizer(text_root: Path, output_root: Path, vocab_size: int) -> Path
 
 
 def encode_file(text_path: Path, processor: spm.SentencePieceProcessor, output_prefix: Path) -> dict:
-    token_path = output_prefix.with_suffix(".bin")
-    index_path = output_prefix.with_suffix(".idx.npy")
+    # Keep the language extension: ``train.en`` must not collide with
+    # ``train.de`` as ``Path.with_suffix`` would turn both into ``train.bin``.
+    token_path = Path(f"{output_prefix}.bin")
+    index_path = Path(f"{output_prefix}.idx.npy")
     if token_path.exists() and index_path.exists():
         offsets = np.load(index_path, mmap_mode="r")
         return {"sequences": int(len(offsets) - 1), "tokens": int(offsets[-1])}
