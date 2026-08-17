@@ -44,12 +44,10 @@ torchrun --standalone --nproc_per_node=4 experiments/train_wmt14.py \
   --metric-beta 1.0 \
   --value-beta 1.0 \
   --generator-mixing softmax \
-  --induced_metric_diversity_weight 0.0 \
-  --metric_diversity_weight 0.0 \
-  --no-stabilize_generators \
-  --fuse_base_qkv \
-  --fold_value_transform_into_output \
-  --sdpa_gqa_mode auto \
+  --no-stabilize-generators \
+  --fuse-base-qkv \
+  --fold-value-transform-into-output \
+  --sdpa-gqa-mode auto \
   --head-dim 64 \
   --max-source-length 256 \
   --max-target-length 256 \

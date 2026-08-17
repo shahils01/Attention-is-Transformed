@@ -25,6 +25,10 @@ def args_parser() -> argparse.ArgumentParser:
     p.add_argument('--num-encoder-layers', type=int, default=6); p.add_argument('--num-decoder-layers', type=int, default=6)
     p.add_argument('--num-heads', type=int, default=8); p.add_argument('--head-dim', type=int, default=64)
     p.add_argument('--num-kv-heads', type=int); p.add_argument('--num-generators', type=int, default=8)
+    p.add_argument('--stabilize-generators', action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument('--fuse-base-qkv', action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument('--fold-value-transform-into-output', action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument('--sdpa-gqa-mode', choices=['auto', 'native', 'expand'], default='auto')
     p.add_argument('--generator-mixing', choices=['softmax', 'none'], default='softmax')
     p.add_argument('--theta-init', choices=['random_sphere', 'circle'], default='random_sphere')
     p.add_argument('--theta-init-scale', type=float, default=0.02); p.add_argument('--generator-init-scale', type=float, default=0.02)
@@ -108,7 +112,24 @@ def main():
     cfg = {'pad_id': ids['pad'], 'bos_id': ids['bos'], 'eos_id': ids['eos'], 'max_source_length': a.max_source_length, 'max_target_length': a.max_target_length, 'batch_size': a.batch_size}
     train, valid = WMT14Dataset(a.data_dir, 'train'), WMT14Dataset(a.data_dir, 'validation')
     batcher = TokenBucketBatcher(train, tokens_per_batch=a.tokens_per_batch, max_source_length=a.max_source_length, max_target_length=a.max_target_length, seed=a.seed + rank, rank=rank, world_size=world, bucket_size=a.bucket_size) if a.tokens_per_batch else None
-    attention_kw = {k: getattr(a, k) for k in ('num_generators','generator_mixing','num_kv_heads','theta_init','theta_init_scale','generator_init_scale','metric_beta','value_beta','base_dim','value_dim','num_base_heads','value_transform')}
+    attention_kw = {
+        'num_generators': a.num_generators,
+        'generator_mixing': a.generator_mixing,
+        'num_kv_heads': a.num_kv_heads,
+        'theta_init': a.theta_init,
+        'theta_init_scale': a.theta_init_scale,
+        'generator_init_scale': a.generator_init_scale,
+        'metric_beta': a.metric_beta,
+        'value_beta': a.value_beta,
+        'base_dim': a.base_dim,
+        'value_dim': a.value_dim,
+        'num_base_heads': a.num_base_heads,
+        'value_transform': a.value_transform,
+        'stabilize_generators': a.stabilize_generators,
+        'fuse_base_qkv': a.fuse_base_qkv,
+        'fold_value_transform_into_output': a.fold_value_transform_into_output,
+        'sdpa_gqa_mode': a.sdpa_gqa_mode,
+    }
     model = WMT14Transformer(vocab_size=manifest['tokenizer']['vocab_size'], d_model=a.d_model, ffn_dim=a.ffn_dim, num_encoder_layers=a.num_encoder_layers, num_decoder_layers=a.num_decoder_layers, num_heads=a.num_heads, head_dim=a.head_dim, attention_type=a.attention, dropout=a.dropout, max_source_length=a.max_source_length, max_target_length=a.max_target_length, pad_id=ids['pad'], share_all_embeddings=a.share_all_embeddings, **attention_kw).to(device)
     parameter_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     optimizer = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.weight_decay)
