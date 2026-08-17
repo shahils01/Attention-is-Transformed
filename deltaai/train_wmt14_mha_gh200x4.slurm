@@ -1,26 +1,31 @@
 #!/usr/bin/env bash
-# WMT14 EN???DE Transformer-base MHA baseline: 60.76M parameters at length 256.
+# WMT14 EN->DE Transformer-base MHA baseline, adapted from the Palmetto job.
+# 60.76M parameters at maximum source/target length 256.
 #SBATCH --job-name=wmt14-mha-base
-#SBATCH --account=cuuser_yue6_imitation_learning_shahil
-#SBATCH --partition=work1
+#SBATCH --account=biad-dtai-gh
+#SBATCH --partition=ghx4
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=256G
-#SBATCH --gres=gpu:h200:4
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=256g
+#SBATCH --gpus-per-node=4
 #SBATCH --time=48:00:00
-#SBATCH --output=/scratch/shahils/lgma_runs/wmt14_mha_base_h200x4/logs/%x_%j.out
-#SBATCH --error=/scratch/shahils/lgma_runs/wmt14_mha_base_h200x4/logs/%x_%j.err
+#SBATCH --output=/work/hdd/biad/sshaik4/logs/%x_%j.out
+#SBATCH --error=/work/hdd/biad/sshaik4/logs/%x_%j.err
 
-source /etc/profile.d/modules.sh
-module load anaconda3
-source activate llava_video
 set -euo pipefail
 
-REPO_DIR=/home/shahils/Desktop/gitBackupRepo/Attention-is-Transformed
-DATA_DIR=/scratch/shahils/lgma_data/wmt14_en_de/processed_spm32k
-OUTPUT_DIR=/scratch/shahils/lgma_runs/wmt14_mha_base_h200x4
-mkdir -p "${OUTPUT_DIR}/logs"
+REPO_DIR=/u/sshaik4/Attention-is-Transformed
+PROJECT_DIR=/work/hdd/biad/sshaik4
+DATA_DIR=${PROJECT_DIR}/lgma_data/wmt14_en_de/processed_spm32k
+OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/wmt14_mha_base_gh200x4
+VENV_DIR=${PROJECT_DIR}/venvs/lgma
+
+module load python/miniforge3_pytorch/2.12.0
+source "${VENV_DIR}/bin/activate"
+export OMP_NUM_THREADS=8
+
+mkdir -p "${OUTPUT_DIR}/logs" "${PROJECT_DIR}/logs"
 cd "${REPO_DIR}"
 export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
 
@@ -53,7 +58,7 @@ torchrun --standalone --nproc_per_node=4 experiments/train_wmt14.py \
   --save-every 5000 \
   --wandb-project wmt14 \
   --wandb-entity i2rLAB \
-  --wandb-run-name wmt14-mha-base-h200x4 \
+  --wandb-run-name wmt14-mha-base-gh200x4 \
   --wandb-group wmt14 \
-  --wandb-tags wmt14,mha,transformer-base,60m,h200,ddp4,tokens4096,gb32768 \
+  --wandb-tags wmt14,mha,transformer-base,60m,gh200,ddp4,tokens4096,gb32768 \
   --wandb-mode online
