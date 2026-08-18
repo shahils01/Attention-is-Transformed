@@ -225,11 +225,14 @@ class StandardMultiheadAttention(nn.Module):
         need_weights: bool = False,
         past_key_value: KVCache | None = None,
         use_cache: bool = False,
+        context: torch.Tensor | None = None,
     ):
         batch, seq_len, _ = x.shape
+        key_value = x if context is None else context
         q = self.q_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k_new = self.k_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        v_new = self.v_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        source_len = key_value.shape[1]
+        k_new = self.k_proj(key_value).view(batch, source_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v_new = self.v_proj(key_value).view(batch, source_len, self.num_heads, self.head_dim).transpose(1, 2)
         k, v = _append_to_cache(k_new, v_new, past_key_value)
         present_key_value = (k, v)
 
@@ -331,13 +334,15 @@ class CollaborativeAttention(nn.Module):
         need_weights: bool = False,
         past_key_value: KVCache | None = None,
         use_cache: bool = False,
+        context: torch.Tensor | None = None,
     ):
         batch, seq_len, _ = x.shape
+        key_value = x if context is None else context
         q_shared = self.q_proj(x)
-        k_new = self.k_proj(x)[:, None, :, :]
+        k_new = self.k_proj(key_value)[:, None, :, :]
         v_new = (
-            self.v_proj(x)
-            .view(batch, seq_len, self.num_heads, self.value_dim)
+            self.v_proj(key_value)
+            .view(batch, key_value.shape[1], self.num_heads, self.value_dim)
             .transpose(1, 2)
         )
         k_cached, v = _append_to_cache(k_new, v_new, past_key_value)
@@ -412,11 +417,13 @@ class SharedIdentityAttention(nn.Module):
         need_weights: bool = False,
         past_key_value: KVCache | None = None,
         use_cache: bool = False,
+        context: torch.Tensor | None = None,
     ):
         batch, seq_len, _ = x.shape
+        key_value = x if context is None else context
         q = self.q_proj(x)
-        k_new = self.k_proj(x)[:, None, :, :]
-        v_new = self.v_proj(x)[:, None, :, :]
+        k_new = self.k_proj(key_value)[:, None, :, :]
+        v_new = self.v_proj(key_value)[:, None, :, :]
         k_cached, v_cached = _append_to_cache(k_new, v_new, past_key_value)
         present_key_value = (k_cached, v_cached)
         k = k_cached[:, 0]
@@ -487,11 +494,14 @@ class GroupedQueryAttention(nn.Module):
         need_weights: bool = False,
         past_key_value: KVCache | None = None,
         use_cache: bool = False,
+        context: torch.Tensor | None = None,
     ):
         batch, seq_len, _ = x.shape
+        key_value = x if context is None else context
         q = self.q_proj(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k_new = self.k_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        v_new = self.v_proj(x).view(batch, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        source_len = key_value.shape[1]
+        k_new = self.k_proj(key_value).view(batch, source_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v_new = self.v_proj(key_value).view(batch, source_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         k, v = _append_to_cache(k_new, v_new, past_key_value)
         present_key_value = (k, v)
         out_heads = None

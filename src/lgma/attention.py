@@ -498,8 +498,14 @@ class LieGeneratedMetricAttention(nn.Module):
             return eye[None, :, :] + head_generators + 0.5 * second_order
         return torch.linalg.matrix_exp(head_generators.float()).to(dtype=head_generators.dtype)
 
-    def _project(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if self.fuse_base_qkv:
+    def _project(
+        self,
+        x: torch.Tensor,
+        context: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # A fused projection is only valid for self-attention. Cross-attention
+        # has decoder queries and encoder keys/values from different tensors.
+        if self.fuse_base_qkv and context is None:
             # Retain the legacy Parameters and state-dict keys so existing model
             # and optimizer checkpoints remain directly loadable.
             weight = torch.cat(
@@ -514,7 +520,8 @@ class LieGeneratedMetricAttention(nn.Module):
             qk_width = self.num_base_heads * self.base_dim
             value_width = self.num_base_heads * self.value_dim
             return torch.split(qkv, (qk_width, qk_width, value_width), dim=-1)
-        return self.q_proj(x), self.k_proj(x), self.v_proj(x)
+        key_value = x if context is None else context
+        return self.q_proj(x), self.k_proj(key_value), self.v_proj(key_value)
 
     def _reshape_base_qk(self, tensor: torch.Tensor) -> torch.Tensor:
         batch, seq_len, _ = tensor.shape
@@ -927,11 +934,16 @@ class LieGeneratedMetricAttention(nn.Module):
         need_weights: bool = False,
         past_key_value: KVCache | None = None,
         use_cache: bool = False,
+        context: torch.Tensor | None = None,
     ):
         if x.ndim != 3:
             raise ValueError(f"x must have shape (batch, seq_len, d_model), got {tuple(x.shape)}")
 
-        q, k_new, v_new = self._project(x)
+        if context is not None and context.ndim != 3:
+            raise ValueError(
+                f"context must have shape (batch, source_len, d_model), got {tuple(context.shape)}"
+            )
+        q, k_new, v_new = self._project(x, context=context)
         k_base_new = self._reshape_base_qk(k_new)
         v_base_new = self._reshape_base_values(v_new)
         k, v = _append_base_cache(k_base_new, v_base_new, past_key_value)

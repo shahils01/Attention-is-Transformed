@@ -21,6 +21,7 @@ def args_parser() -> argparse.ArgumentParser:
     p.add_argument('--data-dir', type=Path, required=True)
     p.add_argument('--output-dir', type=Path, required=True)
     p.add_argument('--attention', default='mha')
+    p.add_argument('--cross-attention', help='Decoder cross-attention type; defaults to --attention for a full replacement test.')
     p.add_argument('--d-model', type=int, default=512); p.add_argument('--ffn-dim', type=int, default=2048)
     p.add_argument('--num-encoder-layers', type=int, default=6); p.add_argument('--num-decoder-layers', type=int, default=6)
     p.add_argument('--num-heads', type=int, default=8); p.add_argument('--head-dim', type=int, default=64)
@@ -142,7 +143,8 @@ def main():
         'fold_value_transform_into_output': a.fold_value_transform_into_output,
         'sdpa_gqa_mode': a.sdpa_gqa_mode,
     }
-    model = WMT14Transformer(vocab_size=manifest['tokenizer']['vocab_size'], d_model=a.d_model, ffn_dim=a.ffn_dim, num_encoder_layers=a.num_encoder_layers, num_decoder_layers=a.num_decoder_layers, num_heads=a.num_heads, head_dim=a.head_dim, attention_type=a.attention, dropout=a.dropout, max_source_length=a.max_source_length, max_target_length=a.max_target_length, pad_id=ids['pad'], share_all_embeddings=a.share_all_embeddings, **attention_kw).to(device)
+    cross_attention = a.cross_attention or a.attention
+    model = WMT14Transformer(vocab_size=manifest['tokenizer']['vocab_size'], d_model=a.d_model, ffn_dim=a.ffn_dim, num_encoder_layers=a.num_encoder_layers, num_decoder_layers=a.num_decoder_layers, num_heads=a.num_heads, head_dim=a.head_dim, attention_type=a.attention, cross_attention_type=cross_attention, dropout=a.dropout, max_source_length=a.max_source_length, max_target_length=a.max_target_length, pad_id=ids['pad'], share_all_embeddings=a.share_all_embeddings, **attention_kw).to(device)
     parameter_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     optimizer = torch.optim.AdamW(model.parameters(), lr=a.lr, betas=(a.adam_beta1, a.adam_beta2), eps=a.adam_eps, weight_decay=a.weight_decay)
     start = 0
@@ -151,7 +153,7 @@ def main():
     if distributed: model = DDP(model, device_ids=[local], output_device=local)
     if rank == 0: a.output_dir.mkdir(parents=True, exist_ok=True)
     if distributed: dist.barrier()
-    run = init_wandb_run(project=a.wandb_project, entity=a.wandb_entity, name=a.wandb_run_name, group=a.wandb_group, tags=a.wandb_tags, mode=a.wandb_mode, output_dir=a.output_dir, config={'args':vars(a), 'manifest':manifest, 'parameters':parameter_count, 'cross_attention':'standard_mha_shared_across_methods'}) if rank == 0 else None
+    run = init_wandb_run(project=a.wandb_project, entity=a.wandb_entity, name=a.wandb_run_name, group=a.wandb_group, tags=a.wandb_tags, mode=a.wandb_mode, output_dir=a.output_dir, config={'args':vars(a), 'manifest':manifest, 'parameters':parameter_count, 'cross_attention':cross_attention, 'attention_replacement_scope':'encoder_self+decoder_self+decoder_cross'}) if rank == 0 else None
     generator = torch.Generator().manual_seed(a.seed + rank); model.train(); train_seconds_since_log = 0.0; last_log_step = start
     for step in range(start + 1, a.steps + 1):
         train_started = time.perf_counter()

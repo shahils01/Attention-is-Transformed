@@ -1,8 +1,8 @@
 """WMT14 EN→DE data loading and an encoder–decoder Transformer.
 
-Attention variants are used in encoder and decoder *self-attention*.  The
-decoder's cross-attention is deliberately standard MHA for every method, so a
-translation comparison isolates the proposed self-attention mechanism.
+By default, an attention variant replaces MHA in encoder self-attention,
+decoder self-attention, and decoder cross-attention. This makes translation
+runs end-to-end tests of the proposed replacement rather than partial ablations.
 """
 from __future__ import annotations
 
@@ -177,25 +177,24 @@ class EncoderLayer(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, self_attention: nn.Module, d_model: int, num_heads: int, ffn_dim: int, dropout: float) -> None:
+    def __init__(self, self_attention: nn.Module, cross_attention: nn.Module, d_model: int, ffn_dim: int, dropout: float) -> None:
         super().__init__()
         self.self_attention = self_attention
-        self.cross_attention = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
+        self.cross_attention = cross_attention
         self.norm1, self.norm2, self.norm3 = nn.LayerNorm(d_model), nn.LayerNorm(d_model), nn.LayerNorm(d_model)
         self.ffn = FeedForward(d_model, ffn_dim, dropout)
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor, target_padding: torch.Tensor, source_padding: torch.Tensor) -> torch.Tensor:
         x = x + self.self_attention(self.norm1(x), key_padding_mask=target_padding)
-        cross, _ = self.cross_attention(self.norm2(x), memory, memory, key_padding_mask=source_padding, need_weights=False)
-        x = x + cross
+        x = x + self.cross_attention(self.norm2(x), context=memory, key_padding_mask=source_padding)
         return x + self.ffn(self.norm3(x))
 
 
 class WMT14Transformer(nn.Module):
-    def __init__(self, *, vocab_size: int, d_model: int = 512, ffn_dim: int = 2048, num_encoder_layers: int = 6, num_decoder_layers: int = 6, num_heads: int = 8, head_dim: int = 64, attention_type: AttentionType = 'mha', dropout: float = 0.1, max_source_length: int = 256, max_target_length: int = 256, pad_id: int = 3, share_all_embeddings: bool = False, **attention_kwargs) -> None:
+    def __init__(self, *, vocab_size: int, d_model: int = 512, ffn_dim: int = 2048, num_encoder_layers: int = 6, num_decoder_layers: int = 6, num_heads: int = 8, head_dim: int = 64, attention_type: AttentionType = 'mha', cross_attention_type: AttentionType | None = None, dropout: float = 0.1, max_source_length: int = 256, max_target_length: int = 256, pad_id: int = 3, share_all_embeddings: bool = False, **attention_kwargs) -> None:
         super().__init__()
         if d_model != num_heads * head_dim:
-            raise ValueError('d_model must equal num_heads * head_dim for the cross-attention baseline')
+            raise ValueError('d_model must equal num_heads * head_dim')
         self.pad_id, self.d_model = pad_id, d_model
         self.source_embedding = nn.Embedding(vocab_size, d_model, padding_idx=pad_id)
         # WMT14 assets use one joint EN–DE SentencePiece vocabulary, so full
@@ -205,10 +204,20 @@ class WMT14Transformer(nn.Module):
         self.source_positions = nn.Embedding(max_source_length, d_model)
         self.target_positions = nn.Embedding(max_target_length, d_model)
         self.dropout = nn.Dropout(dropout)
-        def attention(causal: bool) -> nn.Module:
-            return build_attention(attention_type, d_model, num_heads, head_dim, dropout=dropout, causal=causal, **attention_kwargs)
-        self.encoder = nn.ModuleList([EncoderLayer(attention(False), d_model, ffn_dim, dropout) for _ in range(num_encoder_layers)])
-        self.decoder = nn.ModuleList([DecoderLayer(attention(True), d_model, num_heads, ffn_dim, dropout) for _ in range(num_decoder_layers)])
+        cross_attention_type = attention_type if cross_attention_type is None else cross_attention_type
+        def attention(kind: AttentionType, causal: bool) -> nn.Module:
+            return build_attention(kind, d_model, num_heads, head_dim, dropout=dropout, causal=causal, **attention_kwargs)
+        self.encoder = nn.ModuleList([EncoderLayer(attention(attention_type, False), d_model, ffn_dim, dropout) for _ in range(num_encoder_layers)])
+        self.decoder = nn.ModuleList([
+            DecoderLayer(
+                attention(attention_type, True),
+                attention(cross_attention_type, False),
+                d_model,
+                ffn_dim,
+                dropout,
+            )
+            for _ in range(num_decoder_layers)
+        ])
         self.encoder_norm, self.decoder_norm = nn.LayerNorm(d_model), nn.LayerNorm(d_model)
         self.output_projection = nn.Linear(d_model, vocab_size, bias=False)
         if share_all_embeddings:

@@ -2,6 +2,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from lgma.attention import LieGeneratedMetricAttention
+from lgma.baselines import GroupedQueryAttention
 from lgma.seq2seq import TokenBucketBatcher, WMT14Transformer, collate_translation
 
 
@@ -48,6 +50,38 @@ def test_tied_embedding_initialization_has_transformer_scale_and_sane_loss():
 
     assert torch.isfinite(loss)
     assert loss.item() < 15.0
+
+
+def test_wmt_replaces_decoder_cross_attention_with_selected_variant():
+    common = dict(
+        vocab_size=256,
+        d_model=32,
+        ffn_dim=64,
+        num_encoder_layers=1,
+        num_decoder_layers=1,
+        num_heads=4,
+        head_dim=8,
+        dropout=0.0,
+        max_source_length=8,
+        max_target_length=8,
+    )
+    gqa = WMT14Transformer(attention_type='gqa', num_kv_heads=2, **common)
+    gt_mha = WMT14Transformer(
+        attention_type='lgma_residual',
+        num_base_heads=2,
+        num_generators=4,
+        **common,
+    )
+
+    assert isinstance(gqa.decoder[0].cross_attention, GroupedQueryAttention)
+    assert isinstance(gt_mha.decoder[0].cross_attention, LieGeneratedMetricAttention)
+
+    # Cross-attention must support different decoder-query and encoder-memory
+    # lengths; self-attention-only implementations can accidentally hide this.
+    source = torch.tensor([[4, 5, 6, 2], [7, 8, 2, 3]])
+    decoder_input = torch.tensor([[1, 9, 10], [1, 11, 3]])
+    assert gqa(source, decoder_input).shape == (2, 3, 256)
+    assert gt_mha(source, decoder_input).shape == (2, 3, 256)
 
 
 class _LengthDataset:
