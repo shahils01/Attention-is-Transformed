@@ -3,6 +3,60 @@ import math
 import torch
 
 from lgma.attention import LieGeneratedMetricAttention
+from lgma.transformer import build_attention, validate_paper_gt_mha_module
+
+
+def test_paper_gt_mha_variants_lock_the_manuscript_equations():
+    expected_modes = {
+        "gt_mha_exact": "exp",
+        "gt_mha_residual": "residual",
+        "gt_mha_quadratic": "quadratic",
+    }
+    for attention_type, expected_mode in expected_modes.items():
+        layer = build_attention(
+            attention_type,
+            d_model=16,
+            num_heads=4,
+            head_dim=4,
+            num_generators=8,
+            num_base_heads=4,
+            generator_mixing="softmax",
+            value_transform="lie",
+            stabilize_generators=False,
+        )
+        assert isinstance(layer, LieGeneratedMetricAttention)
+        assert layer.metric_mode == expected_mode
+        assert layer.value_transform_mode == expected_mode
+        assert layer.logit_scale_mode == "sqrt_dim"
+        assert not hasattr(layer, "head_logit_scale")
+
+        q = torch.randn(2, 5, 16)
+        k = torch.randn(2, 4, 7, 4)
+        unscaled = layer.compute_scores(q, k, apply_scale=False)
+        scaled = layer.compute_scores(q, k, apply_scale=True)
+        assert torch.allclose(scaled, unscaled / math.sqrt(4), atol=1e-6)
+
+        validate_paper_gt_mha_module(layer)
+
+
+def test_paper_gt_mha_validator_rejects_legacy_extra_normalization():
+    legacy = build_attention(
+        "lgma_quad",
+        d_model=16,
+        num_heads=4,
+        head_dim=4,
+        num_generators=8,
+        num_base_heads=4,
+        value_transform="lie",
+        stabilize_generators=False,
+    )
+    try:
+        validate_paper_gt_mha_module(legacy)
+    except ValueError as exc:
+        assert "logit_scale_mode='rms_metric'" in str(exc)
+        assert "learn_head_temperature=True" in str(exc)
+    else:
+        raise AssertionError("legacy lgma_quad must not pass the paper configuration guard")
 
 
 def test_lgma_shape_for_generator_types():

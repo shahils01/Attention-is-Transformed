@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# WMT14 EN->DE full GT-MHA replacement (self- and cross-attention).
+# WMT14 EN->DE paper GT-MHA: C=4, quadratic score/value transforms,
+# p=p_V=8, and full self- and cross-attention replacement.
 # 54.85M parameters at maximum source/target length 256.
 #SBATCH --job-name=wmt14-gt-mha-full
 #SBATCH --account=bicn-dtai-gh
@@ -18,7 +19,7 @@ set -euo pipefail
 REPO_DIR=/work/hdd/bicn/anayak2/repos/Attention-is-Transformed
 PROJECT_DIR=/work/hdd/bicn/anayak2
 DATA_DIR=${PROJECT_DIR}/lgma_data/wmt14_en_de/processed_spm32k
-OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/wmt14_gt_mha_residual_full_attention_gh200x4
+OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/wmt14_paper_gt_mha_quadratic_full_attention_gh200x4
 VENV_DIR=${PROJECT_DIR}/venvs/lgma
 
 module load python/miniforge3_pytorch/2.12.0
@@ -32,8 +33,9 @@ export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
 torchrun --standalone --nproc_per_node=4 experiments/train_wmt14.py \
   --data-dir "${DATA_DIR}" \
   --output-dir "${OUTPUT_DIR}" \
-  --attention lgma_residual \
-  --cross-attention lgma_residual \
+  --attention gt_mha_quadratic \
+  --cross-attention gt_mha_quadratic \
+  --enforce-paper-gt-mha \
   --d-model 512 \
   --ffn-dim 2048 \
   --num-encoder-layers 6 \
@@ -69,7 +71,7 @@ torchrun --standalone --nproc_per_node=4 experiments/train_wmt14.py \
   --save-every 5000 \
   --wandb-project wmt14 \
   --wandb-entity i2rLAB \
-  --wandb-run-name wmt14-gt-mha-full-attention-gh200x4 \
+  --wandb-run-name wmt14-paper-gt-mha-quadratic-full-attention-gh200x4 \
   --wandb-group wmt14 \
-  --wandb-tags wmt14,gt-mha,transformer-base,55m,full-attention,gh200,ddp4,tokens4096,gb32768 \
+  --wandb-tags wmt14,gt-mha,paper-config,quadratic,c4,p8,value-quadratic,transformer-base,55m,full-attention,gh200,ddp4,tokens4096,gb32768 \
   --wandb-mode online

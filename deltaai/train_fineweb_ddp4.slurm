@@ -17,7 +17,7 @@ PROJECT_DIR=/work/hdd/biad/sshaik4
 PACKED_DATA=${PROJECT_DIR}/lgma_data/fineweb_edu_10BT_packed_v1
 VENV_DIR=${PROJECT_DIR}/venvs/lgma
 CODE_SNAPSHOT=${CODE_SNAPSHOT:?Set CODE_SNAPSHOT to an immutable source snapshot}
-ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to mha, collaborative, or lgma_quad}
+ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to mha, collaborative, or gt_mha_quadratic}
 SEED=${SEED:-0}
 TOTAL_STEPS=9512
 WANDB_PROJECT=${WANDB_PROJECT:-lgma-fineweb-edu}
@@ -33,11 +33,12 @@ case "${ATTENTION_TYPE}" in
     ATTENTION_ARGS=(--attention collaborative --num_heads 16)
     TAGS=fineweb_edu,baseline,collaborative,h16,gh200,ddp4,b64,gb2048,seed${SEED}
     ;;
-  lgma_quad)
-    NUM_GENERATORS=${NUM_GENERATORS:?Set NUM_GENERATORS for LGMA}
-    RUN_KEY=lgma_quad_b4_h16_g${NUM_GENERATORS}
+  gt_mha_quadratic)
+    NUM_GENERATORS=${NUM_GENERATORS:-8}
+    RUN_KEY=paper_gt_mha_quadratic_c4_h16_p${NUM_GENERATORS}
     ATTENTION_ARGS=(
-      --attention lgma_quad
+      --attention gt_mha_quadratic
+      --enforce_paper_gt_mha
       --num_heads 16
       --num_base_heads 4
       --num_generators "${NUM_GENERATORS}"
@@ -48,7 +49,7 @@ case "${ATTENTION_TYPE}" in
       --metric_diversity_weight 0.0
       --induced_metric_diversity_weight 0.0
     )
-    TAGS=fineweb_edu,lgma,quad,ValueLie,multibase,b4,h16,g${NUM_GENERATORS},gh200,ddp4,b64,gb2048,seed${SEED}
+    TAGS=fineweb_edu,gt-mha,paper-config,quadratic,ValueQuadratic,multibase,c4,h16,p${NUM_GENERATORS},gh200,ddp4,b64,gb2048,seed${SEED}
     ;;
   *)
     echo "Unsupported ATTENTION_TYPE=${ATTENTION_TYPE}" >&2

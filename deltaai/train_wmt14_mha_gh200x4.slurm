@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# WMT14 EN->DE full GQA replacement (self- and cross-attention).
-# 53.67M parameters at maximum source/target length 256.
-#SBATCH --job-name=wmt14-gqa-full
+# WMT14 EN->DE matched full-GQA baseline. GQA replaces encoder
+# self-attention, decoder self-attention, and decoder cross-attention.
+# 53.67M parameters at source/target length 256.
+#SBATCH --job-name=wmt14-gqa-full-v3
 #SBATCH --account=biad-dtai-gh
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
@@ -18,7 +19,7 @@ set -euo pipefail
 REPO_DIR=/u/sshaik4/Attention-is-Transformed
 PROJECT_DIR=/work/hdd/biad/sshaik4
 DATA_DIR=${PROJECT_DIR}/lgma_data/wmt14_en_de/processed_spm32k
-OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/wmt14_gqa_full_attention_gh200x4
+OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/wmt14_gqa_full_attention_fixed_v3_gh200x4
 VENV_DIR=${PROJECT_DIR}/venvs/lgma
 
 module load python/miniforge3_pytorch/2.12.0
@@ -60,7 +61,7 @@ torchrun --standalone --nproc_per_node=4 experiments/train_wmt14.py \
   --save-every 5000 \
   --wandb-project wmt14 \
   --wandb-entity i2rLAB \
-  --wandb-run-name wmt14-gqa-full-attention-gh200x4 \
+  --wandb-run-name wmt14-gqa-full-attention-fixed-v3-gh200x4 \
   --wandb-group wmt14 \
-  --wandb-tags wmt14,gqa,transformer-base,54m,full-attention,gh200,ddp4,tokens4096,gb32768 \
+  --wandb-tags wmt14,gqa,matched-fixed-v3,transformer-base,54m,full-attention,gh200,ddp4,tokens4096,gb32768 \
   --wandb-mode online

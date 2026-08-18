@@ -12,7 +12,7 @@ previous_job=""
 case "${attention_type}" in
   mha) job_prefix=fw-mha ;;
   collaborative) job_prefix=fw-collab ;;
-  lgma_quad) job_prefix=fw-lgma-g${NUM_GENERATORS:?Set NUM_GENERATORS for LGMA} ;;
+  gt_mha_quadratic) job_prefix=fw-paper-gtmha-p${NUM_GENERATORS:-8} ;;
   *) echo "Unsupported attention type: ${attention_type}" >&2; exit 2 ;;
 esac
 

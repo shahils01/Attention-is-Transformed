@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Run LGMA's quadratic metric approximation continuously across 12-hour allocations.
-#SBATCH --job-name=lgma_quad_b4h16
+# Run the manuscript's main C=4 quadratic GT-MHA configuration.
+#SBATCH --job-name=paper_gtmha_quad
 #SBATCH --nodes=1
 #SBATCH --tasks-per-node=1
 #SBATCH --cpus-per-task=4
@@ -21,7 +21,7 @@ set -uo pipefail
 
 cd /home/shahils/Desktop/gitBackupRepo/Attention-is-Transformed/
 
-OUTPUT_DIR=/scratch/shahils/lgma_runs/large_tinystories_lgma_quad_b4_h16_h200_4
+OUTPUT_DIR=/scratch/shahils/lgma_runs/large_tinystories_paper_gt_mha_quadratic_c4_p8_h16_h200_4
 KEEP_CHECKPOINTS=3
 COMPILE_BACKEND=${COMPILE_BACKEND:-inductor}
 mkdir -p "$OUTPUT_DIR"
@@ -86,9 +86,9 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
   --diagnostic_every 1000 \
   --diagnostic_batches 2 \
   --wandb_project lgma \
-  --wandb_run_name tinystory_lgma_quad_b4_h16_h200 \
+  --wandb_run_name tinystory_paper_gt_mha_quadratic_c4_p8_h16_h200 \
   --wandb_group tinystories \
-  --wandb_tags tinystory,lgma,quad,ValueLie,multibase,b4,h16,h200 \
+  --wandb_tags tinystory,gt-mha,paper-config,quadratic,ValueQuadratic,multibase,c4,p8,h16,h200 \
   --induced_metric_diversity_weight 0.0 \
   --metric_diversity_weight 0.0 \
   --d_model 1024 \
@@ -99,7 +99,6 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
   --num_generators 8 \
   --metric_beta 1.0 \
   --value_beta 1.0 \
-  --head_generator_symmetric_cap 6.0 \
   --no-stabilize_generators \
   --context_length 512 \
   --dropout 0.1 \
@@ -112,7 +111,8 @@ torchrun --standalone --nproc_per_node=4 experiments/train_tinystories.py \
   --precision bf16 \
   --compile \
   --compile_backend "$COMPILE_BACKEND" \
-  --attention lgma_quad \
+  --attention gt_mha_quadratic \
+  --enforce_paper_gt_mha \
   --num_heads 16 \
   --num_base_heads 4 \
   --value_transform lie \

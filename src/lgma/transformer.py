@@ -32,6 +32,9 @@ AttentionType = Literal[
     "lgma_value_diag",
     "lgma_multibase",
     "lgma_multibase_value_diag",
+    "gt_mha_exact",
+    "gt_mha_residual",
+    "gt_mha_quadratic",
 ]
 LGMA_ATTENTION_TYPES = {
     "lgma",
@@ -42,7 +45,51 @@ LGMA_ATTENTION_TYPES = {
     "lgma_value_diag",
     "lgma_multibase",
     "lgma_multibase_value_diag",
+    "gt_mha_exact",
+    "gt_mha_residual",
+    "gt_mha_quadratic",
 }
+
+
+def validate_paper_gt_mha_module(module: nn.Module) -> None:
+    """Fail fast unless ``module`` matches a manuscript GT-MHA variant."""
+    paper_modes = {"exp", "residual", "quadratic"}
+    expected = {
+        "num_base_heads": 4,
+        "num_generators": 8,
+        "generator_type": "full",
+        "generator_mixing": "softmax",
+        "stabilize_generators": False,
+        "normalize_generators": False,
+        "head_generator_symmetric_cap": None,
+        "logit_scale_mode": "sqrt_dim",
+        "learn_head_temperature": False,
+    }
+    if not isinstance(module, LieGeneratedMetricAttention):
+        raise ValueError("paper GT-MHA requires LieGeneratedMetricAttention")
+    mismatches = []
+    if module.metric_mode not in paper_modes:
+        mismatches.append(
+            f"metric_mode={module.metric_mode!r} (expected one of {sorted(paper_modes)!r})"
+        )
+    if module.value_transform_mode != module.metric_mode:
+        mismatches.append(
+            f"value_transform_mode={module.value_transform_mode!r} "
+            f"(expected {module.metric_mode!r} to match the score transform)"
+        )
+    mismatches.extend(
+        f"{key}={getattr(module, key)!r} (expected {value!r})"
+        for key, value in expected.items()
+        if getattr(module, key) != value
+    )
+    if module.base_dim != module.head_dim:
+        mismatches.append(f"base_dim={module.base_dim!r} (expected head_dim={module.head_dim})")
+    if module.value_dim != module.head_dim:
+        mismatches.append(f"value_dim={module.value_dim!r} (expected head_dim={module.head_dim})")
+    if hasattr(module, "head_logit_scale"):
+        mismatches.append("unexpected learned head_logit_scale parameter")
+    if mismatches:
+        raise ValueError("paper GT-MHA module mismatch: " + "; ".join(mismatches))
 
 KVCache = tuple[torch.Tensor, torch.Tensor]
 ModelKVCache = tuple[KVCache, ...]
@@ -128,7 +175,23 @@ def build_attention(
     if attention_type in LGMA_ATTENTION_TYPES:
         if num_generators <= 0:
             raise ValueError("num_generators must be positive for LGMA")
-        if attention_type == "lgma_v2":
+        if attention_type == "gt_mha_exact":
+            # Canonical manuscript equation: M_h = exp(A_h), followed by
+            # Q_h K_h^T / sqrt(d_h), with no extra learned temperature.
+            metric_mode = "exp"
+            logit_scale_mode = "sqrt_dim"
+            learn_head_temperature = False
+        elif attention_type == "gt_mha_residual":
+            # First-order manuscript approximation: I + A_h.
+            metric_mode = "residual"
+            logit_scale_mode = "sqrt_dim"
+            learn_head_temperature = False
+        elif attention_type == "gt_mha_quadratic":
+            # Second-order manuscript approximation: I + A_h + A_h^2 / 2.
+            metric_mode = "quadratic"
+            logit_scale_mode = "sqrt_dim"
+            learn_head_temperature = False
+        elif attention_type == "lgma_v2":
             metric_mode = "exp"
             logit_scale_mode = "rms_metric"
             learn_head_temperature = True

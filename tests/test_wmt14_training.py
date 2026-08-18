@@ -67,9 +67,11 @@ def test_wmt_replaces_decoder_cross_attention_with_selected_variant():
     )
     gqa = WMT14Transformer(attention_type='gqa', num_kv_heads=2, **common)
     gt_mha = WMT14Transformer(
-        attention_type='lgma_residual',
+        attention_type='gt_mha_quadratic',
         num_base_heads=2,
         num_generators=4,
+        value_transform='lie',
+        stabilize_generators=False,
         **common,
     )
 

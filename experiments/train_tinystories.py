@@ -40,7 +40,12 @@ from lgma.diagnostics import (
 from lgma.packed_data import PackedTokenSplit, load_packed_token_corpus
 from lgma.synthetic import CharTokenizer, SyntheticBatch, make_lm_batch
 from lgma.tracking import finish_wandb, init_wandb_run, log_wandb
-from lgma.transformer import LGMA_ATTENTION_TYPES, TinyTransformerLM, load_model_config
+from lgma.transformer import (
+    LGMA_ATTENTION_TYPES,
+    TinyTransformerLM,
+    load_model_config,
+    validate_paper_gt_mha_module,
+)
 
 
 ATTENTION_TYPES = [
@@ -57,6 +62,9 @@ ATTENTION_TYPES = [
     "lgma_value_diag",
     "lgma_multibase",
     "lgma_multibase_value_diag",
+    "gt_mha_exact",
+    "gt_mha_residual",
+    "gt_mha_quadratic",
 ]
 GENERATOR_TYPES = ["full", "diagonal", "symmetric"]
 GENERATOR_MIXING_MODES = ["softmax", "none"]
@@ -84,6 +92,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional JSON config. CLI model args override config values.",
     )
     parser.add_argument("--attention", choices=ATTENTION_TYPES, default=None)
+    parser.add_argument(
+        "--enforce_paper_gt_mha",
+        action="store_true",
+        help="Fail fast unless a manuscript-faithful C=4 exact, residual, or quadratic GT-MHA configuration is active.",
+    )
     parser.add_argument("--generator_type", choices=GENERATOR_TYPES, default=None)
     parser.add_argument(
         "--generator_mixing",
@@ -1170,6 +1183,8 @@ def main() -> None:
         config = model_config_from_args(args)
         seq_len = int(config["context_length"])
         base_model = TinyTransformerLM(vocab_size=tokenizer.vocab_size, **config).to(device)
+        if args.enforce_paper_gt_mha:
+            validate_paper_gt_mha_module(base_model.first_attention)
         optimizer = torch.optim.AdamW(
             base_model.parameters(),
             lr=args.lr,
