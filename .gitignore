@@ -5,3 +5,4 @@ logs
 
 # OSPool job secret; create only on the AP40 access point.
 ospool/.wandb_api_key
+ckpts/
