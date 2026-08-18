@@ -26,8 +26,8 @@ request_disk = 100GB
 request_gpus = 1
 
 # A100 is 8.0, Hopper is 9.0, and B100/B200 are 10.0.
-gpus_minimum_capability = 9.0
-gpus_maximum_capability = 8.0
+gpus_minimum_capability = 8.0
+gpus_maximum_capability = 10.0
 gpus_minimum_memory = 80000
 gpus_minimum_runtime = 12.8
 

@@ -126,12 +126,23 @@ class TranslationBatch:
 
 def collate_translation(
     samples: Sequence[tuple[np.ndarray, np.ndarray]],
-    *, pad_id: int, bos_id: int, max_source_length: int, max_target_length: int,
+    *, pad_id: int, bos_id: int, eos_id: int | None = None,
+    max_source_length: int, max_target_length: int,
 ) -> TranslationBatch:
     if not samples:
         raise ValueError('empty translation batch')
     src = [torch.from_numpy(x[:max_source_length].copy()) for x, _ in samples]
     tgt = [torch.from_numpy(y[:max_target_length].copy()) for _, y in samples]
+    # Encoded examples already end in EOS, but truncation used to silently
+    # remove it.  That leaves the decoder with no stop target on every long
+    # sentence and hurts generation disproportionately to teacher-forced loss.
+    if eos_id is not None:
+        for truncated, (source, _) in zip(src, samples):
+            if len(source) > max_source_length:
+                truncated[-1] = eos_id
+        for truncated, (_, target) in zip(tgt, samples):
+            if len(target) > max_target_length:
+                truncated[-1] = eos_id
     max_src, max_tgt = max(map(len, src)), max(map(len, tgt))
     source_ids = torch.full((len(samples), max_src), pad_id, dtype=torch.long)
     targets = torch.full((len(samples), max_tgt), pad_id, dtype=torch.long)
@@ -202,6 +213,27 @@ class WMT14Transformer(nn.Module):
         self.output_projection = nn.Linear(d_model, vocab_size, bias=False)
         if share_all_embeddings:
             self.output_projection.weight = self.source_embedding.weight
+        self._reset_embedding_parameters(share_all_embeddings)
+
+    def _reset_embedding_parameters(self, share_all_embeddings: bool) -> None:
+        """Use Transformer-scale embeddings, especially for tied softmax.
+
+        ``nn.Embedding`` defaults to unit-variance weights.  Tying those raw
+        weights to the vocabulary projection produces initial logits with a
+        standard deviation on the order of ``sqrt(d_model)``.  For a 32k
+        vocabulary this can yield losses in the tens and very slow recovery.
+        """
+        std = self.d_model ** -0.5
+        nn.init.normal_(self.source_embedding.weight, mean=0.0, std=std)
+        if not share_all_embeddings:
+            nn.init.normal_(self.target_embedding.weight, mean=0.0, std=std)
+            nn.init.normal_(self.output_projection.weight, mean=0.0, std=std)
+        nn.init.normal_(self.source_positions.weight, mean=0.0, std=std)
+        nn.init.normal_(self.target_positions.weight, mean=0.0, std=std)
+        with torch.no_grad():
+            self.source_embedding.weight[self.pad_id].zero_()
+            if not share_all_embeddings:
+                self.target_embedding.weight[self.pad_id].zero_()
 
     @staticmethod
     def _embed(ids: torch.Tensor, token: nn.Embedding, position: nn.Embedding, dropout: nn.Module) -> torch.Tensor:

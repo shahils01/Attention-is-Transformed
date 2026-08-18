@@ -60,7 +60,7 @@ torchrun --standalone --nproc_per_node=4 experiments/train_wmt14.py \
   --lr-schedule inverse_sqrt \
   --warmup-steps 4000 \
   --label-smoothing 0.1 \
-  --weight-decay 0.01 \
+  --weight-decay 0.0 \
   --precision bf16 \
   --log-every 100 \
   --eval-every 1000 \
