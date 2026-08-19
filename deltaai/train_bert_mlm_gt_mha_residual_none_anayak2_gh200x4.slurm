@@ -63,6 +63,9 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 experiments/trai
   --num-generators 8 \
   --generator-mixing none \
   --no-enforce-paper-gt-mha \
+  --use-sdpa \
+  --fuse-base-qkv \
+  --sdpa-gqa-mode native \
   --dataset-name wikitext \
   --dataset-config wikitext-103-raw-v1 \
   --max-sequence-length 128 \

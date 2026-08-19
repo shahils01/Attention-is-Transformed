@@ -49,6 +49,9 @@ case "${ATTENTION_TYPE}" in
       --num-base-heads 6
       --num-generators 8
       --generator-mixing "${GENERATOR_MIXING}"
+      --use-sdpa
+      --fuse-base-qkv
+      --sdpa-gqa-mode native
       "${PAPER_ARGS[@]}"
     )
     ;;
@@ -58,6 +61,9 @@ case "${ATTENTION_TYPE}" in
       --num-base-heads 4
       --num-generators 8
       --generator-mixing "${GENERATOR_MIXING}"
+      --use-sdpa
+      --fuse-base-qkv
+      --sdpa-gqa-mode native
       "${PAPER_ARGS[@]}"
     )
     ;;
