@@ -18,7 +18,18 @@ set -euo pipefail
 PROJECT_DIR=/anvil/projects/x-cis261553
 REPO_DIR=/home/x-arai3/Attention-is-Transformed
 VENV_DIR=${PROJECT_DIR}/venvs/lgma-bert
-RUN_NAME=bert_base_gt_mha_residual_random_seed42_anvil_h100x4_v1
+GENERATOR_MIXING=${GENERATOR_MIXING:-softmax}
+ENFORCE_PAPER_GT_MHA=${ENFORCE_PAPER_GT_MHA:-true}
+case "${ENFORCE_PAPER_GT_MHA}" in
+  true) PAPER_ARGS=(--enforce-paper-gt-mha) ;;
+  false) PAPER_ARGS=(--no-enforce-paper-gt-mha) ;;
+  *) echo "ENFORCE_PAPER_GT_MHA must be true or false" >&2; exit 2 ;;
+esac
+MIXING_SUFFIX=
+if [[ "${GENERATOR_MIXING}" != "softmax" ]]; then
+  MIXING_SUFFIX=_mix${GENERATOR_MIXING}
+fi
+RUN_NAME=bert_base_gt_mha_residual_random_seed42${MIXING_SUFFIX}_anvil_h100x4_v1
 OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/${RUN_NAME}
 
 module purge >/dev/null 2>&1 || true
@@ -57,7 +68,8 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
   --initialization random \
   --num-base-heads 4 \
   --num-generators 8 \
-  --enforce-paper-gt-mha \
+  --generator-mixing "${GENERATOR_MIXING}" \
+  "${PAPER_ARGS[@]}" \
   --dataset-name wikitext \
   --dataset-config wikitext-103-raw-v1 \
   --max-sequence-length 128 \

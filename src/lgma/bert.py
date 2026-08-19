@@ -77,7 +77,6 @@ class BertGtMhaSelfAttention(nn.Module):
         )
         # BERT's surrounding BertSelfOutput retains the official output projection.
         self.gt_attention.out_proj = nn.Identity()
-        validate_paper_gt_mha_module(self.gt_attention)
 
     @property
     def query(self) -> nn.Linear:
@@ -211,6 +210,7 @@ def replace_bert_self_attention(
     attention_type: BertAttentionType,
     num_base_heads: int = 4,
     num_generators: int = 8,
+    generator_mixing: str = "softmax",
     initialize_from_mha: bool = True,
     enforce_paper_gt_mha: bool = True,
 ) -> list[dict[str, Any]]:
@@ -235,8 +235,11 @@ def replace_bert_self_attention(
                 attention_type=attention_type,
                 num_base_heads=num_base_heads,
                 num_generators=num_generators,
+                generator_mixing=generator_mixing,
             )
         )
+        if enforce_paper_gt_mha:
+            validate_paper_gt_mha_module(replacement.gt_attention)
         parameter = next(teacher.parameters())
         replacement.to(device=parameter.device, dtype=parameter.dtype)
         if initialize_from_mha:
@@ -265,6 +268,7 @@ def load_bert_masked_lm(
     initialization: Literal["checkpoint", "random"] = "checkpoint",
     num_base_heads: int = 4,
     num_generators: int = 8,
+    generator_mixing: str = "softmax",
     enforce_paper_gt_mha: bool = True,
     trust_remote_code: bool = False,
 ) -> tuple[nn.Module, list[dict[str, Any]]]:
@@ -281,6 +285,7 @@ def load_bert_masked_lm(
             raise ValueError(f"requested {attention_type!r}, saved model uses {saved_type!r}")
         attention_type = saved_type
         num_base_heads, num_generators = manifest["num_base_heads"], manifest["num_generators"]
+        generator_mixing = manifest.get("generator_mixing", "softmax")
     attention_type = attention_type or "mha"
     if manifest and attention_type in GT_MHA_BERT_ATTENTION_TYPES:
         if not state_path.is_file():
@@ -289,7 +294,8 @@ def load_bert_masked_lm(
         model = AutoModelForMaskedLM.from_config(config, trust_remote_code=trust_remote_code)
         audit = replace_bert_self_attention(
             model, attention_type=attention_type, num_base_heads=int(num_base_heads),
-            num_generators=int(num_generators), initialize_from_mha=False,
+            num_generators=int(num_generators), generator_mixing=generator_mixing,
+            initialize_from_mha=False,
             enforce_paper_gt_mha=enforce_paper_gt_mha,
         )
         try:
@@ -307,7 +313,8 @@ def load_bert_masked_lm(
         raise ValueError("initialization must be 'checkpoint' or 'random'")
     return model, replace_bert_self_attention(
         model, attention_type=attention_type, num_base_heads=num_base_heads,
-        num_generators=num_generators, initialize_from_mha=initialization == "checkpoint",
+        num_generators=num_generators, generator_mixing=generator_mixing,
+        initialize_from_mha=initialization == "checkpoint",
         enforce_paper_gt_mha=enforce_paper_gt_mha,
     )
 
@@ -319,6 +326,7 @@ def load_bert_sequence_classifier(
     attention_type: BertAttentionType = "mha",
     num_base_heads: int = 4,
     num_generators: int = 8,
+    generator_mixing: str = "softmax",
     enforce_paper_gt_mha: bool = True,
     trust_remote_code: bool = False,
 ) -> tuple[nn.Module, list[dict[str, Any]]]:
@@ -331,6 +339,7 @@ def load_bert_sequence_classifier(
     )
     return model, replace_bert_self_attention(
         model, attention_type=attention_type, num_base_heads=num_base_heads,
-        num_generators=num_generators, initialize_from_mha=True,
+        num_generators=num_generators, generator_mixing=generator_mixing,
+        initialize_from_mha=True,
         enforce_paper_gt_mha=enforce_paper_gt_mha,
     )

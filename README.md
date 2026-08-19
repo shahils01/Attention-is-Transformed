@@ -292,6 +292,19 @@ python experiments/train_bert_mlm.py \
   --output-dir outputs/bert-base-gt-mha-scratch
 ```
 
+Generator mixing defaults to the paper configuration, `softmax`. Experimental
+raw signed coefficients can be selected only with paper enforcement disabled:
+
+```bash
+python experiments/train_bert_mlm.py \
+  --model-name-or-path google-bert/bert-base-uncased \
+  --initialization random \
+  --attention-type gt_mha_residual \
+  --generator-mixing none \
+  --no-enforce-paper-gt-mha \
+  --output-dir outputs/bert-base-gt-mha-raw-mixing
+```
+
 This runner implements fixed-length masked-language-model training. It does not
 silently add teacher-student distillation or next-sentence prediction. The
 DeltaAI launcher `deltaai/train_bert_mlm_gh200x4.slurm` supports `mha` and

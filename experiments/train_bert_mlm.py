@@ -19,6 +19,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--initialization", choices=["checkpoint", "random"], default="checkpoint")
     p.add_argument("--num-base-heads", type=int, default=4)
     p.add_argument("--num-generators", type=int, default=8)
+    p.add_argument(
+        "--generator-mixing", "--generator_mixing",
+        dest="generator_mixing", choices=["softmax", "none"], default="softmax",
+    )
     p.add_argument("--enforce-paper-gt-mha", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--dataset-name", default="wikitext")
     p.add_argument("--dataset-config", default="wikitext-103-raw-v1")
@@ -76,7 +80,7 @@ def main() -> None:
     model, audit = load_bert_masked_lm(
         args.model_name_or_path, attention_type=args.attention_type,
         initialization=args.initialization, num_base_heads=args.num_base_heads,
-        num_generators=args.num_generators,
+        num_generators=args.num_generators, generator_mixing=args.generator_mixing,
         enforce_paper_gt_mha=args.enforce_paper_gt_mha,
         trust_remote_code=args.trust_remote_code,
     )
@@ -139,7 +143,8 @@ def main() -> None:
     manifest = {
         "model_name_or_path": args.model_name_or_path, "initialization": args.initialization,
         "attention_type": args.attention_type, "num_base_heads": args.num_base_heads,
-        "num_generators": args.num_generators, "enforce_paper_gt_mha": args.enforce_paper_gt_mha,
+        "num_generators": args.num_generators, "generator_mixing": args.generator_mixing,
+        "enforce_paper_gt_mha": args.enforce_paper_gt_mha,
         "teacher_student_distillation": False, "replacement_audit": audit,
         "parameter_counts": parameter_counts,
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},

@@ -154,6 +154,27 @@ def test_paper_guard_rejects_noncanonical_counts() -> None:
         raise AssertionError("expected the paper GT-MHA guard to reject noncanonical counts")
 
 
+def test_bert_generator_mixing_none_requires_disabling_paper_guard() -> None:
+    guarded = FakeBertModel(num_layers=1)
+    with pytest.raises(ValueError, match="generator_mixing"):
+        replace_bert_self_attention(
+            guarded,
+            attention_type="gt_mha_residual",
+            generator_mixing="none",
+        )
+
+    experimental = FakeBertModel(num_layers=1)
+    audit = replace_bert_self_attention(
+        experimental,
+        attention_type="gt_mha_residual",
+        generator_mixing="none",
+        enforce_paper_gt_mha=False,
+    )
+    replacement = experimental.bert.encoder.layer[0].attention.self
+    assert replacement.gt_attention.generator_mixing == "none"
+    assert audit[0]["gt_mha_config"]["generator_mixing"] == "none"
+
+
 def test_hugging_face_bert_forward_after_replacement() -> None:
     transformers = pytest.importorskip("transformers")
     config = transformers.BertConfig(

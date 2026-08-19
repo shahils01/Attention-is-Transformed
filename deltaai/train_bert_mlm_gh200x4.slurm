@@ -30,6 +30,14 @@ SEED=${SEED:-42}
 MAX_STEPS=${MAX_STEPS:-100000}
 MODEL_NAME=${MODEL_NAME:-google-bert/bert-base-uncased}
 WANDB_PROJECT=${WANDB_PROJECT:-bert-gt-mha}
+GENERATOR_MIXING=${GENERATOR_MIXING:-softmax}
+ENFORCE_PAPER_GT_MHA=${ENFORCE_PAPER_GT_MHA:-true}
+
+case "${ENFORCE_PAPER_GT_MHA}" in
+  true) PAPER_ARGS=(--enforce-paper-gt-mha) ;;
+  false) PAPER_ARGS=(--no-enforce-paper-gt-mha) ;;
+  *) echo "ENFORCE_PAPER_GT_MHA must be true or false" >&2; exit 2 ;;
+esac
 
 case "${ATTENTION_TYPE}" in
   mha)
@@ -40,7 +48,8 @@ case "${ATTENTION_TYPE}" in
       --attention-type gt_mha_exact
       --num-base-heads 4
       --num-generators 8
-      --enforce-paper-gt-mha
+      --generator-mixing "${GENERATOR_MIXING}"
+      "${PAPER_ARGS[@]}"
     )
     ;;
   gt_mha_residual)
@@ -48,7 +57,8 @@ case "${ATTENTION_TYPE}" in
       --attention-type gt_mha_residual
       --num-base-heads 4
       --num-generators 8
-      --enforce-paper-gt-mha
+      --generator-mixing "${GENERATOR_MIXING}"
+      "${PAPER_ARGS[@]}"
     )
     ;;
   *)
@@ -57,7 +67,11 @@ case "${ATTENTION_TYPE}" in
     ;;
 esac
 
-RUN_NAME=bert_base_${ATTENTION_TYPE}_${INITIALIZATION}_seed${SEED}_v1
+MIXING_SUFFIX=
+if [[ "${ATTENTION_TYPE}" != "mha" && "${GENERATOR_MIXING}" != "softmax" ]]; then
+  MIXING_SUFFIX=_mix${GENERATOR_MIXING}
+fi
+RUN_NAME=bert_base_${ATTENTION_TYPE}_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}_v1
 OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/${RUN_NAME}
 
 module load python/miniforge3_pytorch/2.12.0

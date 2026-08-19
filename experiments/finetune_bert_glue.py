@@ -29,6 +29,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--attention-type", choices=["mha", *sorted(GT_MHA_BERT_ATTENTION_TYPES)], default="mha")
     p.add_argument("--num-base-heads", type=int, default=4)
     p.add_argument("--num-generators", type=int, default=8)
+    p.add_argument(
+        "--generator-mixing", "--generator_mixing",
+        dest="generator_mixing", choices=["softmax", "none"], default="softmax",
+    )
     p.add_argument("--enforce-paper-gt-mha", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--max-sequence-length", type=int, default=128)
@@ -75,7 +79,7 @@ def main() -> None:
     model, audit = load_bert_sequence_classifier(
         args.model_name_or_path, num_labels=num_labels,
         attention_type=args.attention_type, num_base_heads=args.num_base_heads,
-        num_generators=args.num_generators,
+        num_generators=args.num_generators, generator_mixing=args.generator_mixing,
         enforce_paper_gt_mha=args.enforce_paper_gt_mha,
         trust_remote_code=args.trust_remote_code,
     )
@@ -127,7 +131,8 @@ def main() -> None:
     manifest = {
         "model_name_or_path": args.model_name_or_path, "task": args.task,
         "attention_type": args.attention_type, "num_base_heads": args.num_base_heads,
-        "num_generators": args.num_generators, "teacher_student_distillation": False,
+        "num_generators": args.num_generators, "generator_mixing": args.generator_mixing,
+        "teacher_student_distillation": False,
         "replacement_audit": audit,
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
     }
