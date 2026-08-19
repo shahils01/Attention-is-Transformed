@@ -12,7 +12,7 @@
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=256g
 #SBATCH --gpus-per-node=4
 #SBATCH --time=48:00:00
@@ -23,8 +23,8 @@ set -euo pipefail
 
 PROJECT_DIR=/work/hdd/biad/sshaik4
 REPO_DIR=${PROJECT_DIR}/repos/Attention-is-Transformed
-VENV_DIR=${PROJECT_DIR}/venvs/lgma
-ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to mha or gt_mha_exact}
+VENV_DIR=${PROJECT_DIR}/venvs/lgma-clean
+ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to mha, gt_mha_exact, or gt_mha_residual}
 INITIALIZATION=${INITIALIZATION:-checkpoint}
 SEED=${SEED:-42}
 MAX_STEPS=${MAX_STEPS:-100000}
@@ -43,8 +43,16 @@ case "${ATTENTION_TYPE}" in
       --enforce-paper-gt-mha
     )
     ;;
+  gt_mha_residual)
+    ATTENTION_ARGS=(
+      --attention-type gt_mha_residual
+      --num-base-heads 4
+      --num-generators 8
+      --enforce-paper-gt-mha
+    )
+    ;;
   *)
-    echo "Unsupported ATTENTION_TYPE=${ATTENTION_TYPE}; use mha or gt_mha_exact" >&2
+    echo "Unsupported ATTENTION_TYPE=${ATTENTION_TYPE}; use mha, gt_mha_exact, or gt_mha_residual" >&2
     exit 2
     ;;
 esac
@@ -56,6 +64,7 @@ module load python/miniforge3_pytorch/2.12.0
 source "${VENV_DIR}/bin/activate"
 export OMP_NUM_THREADS=4
 export WANDB_PROJECT
+export WANDB_ENTITY=${WANDB_ENTITY:-i2rLAB}
 export WANDB_RUN_ID=${RUN_NAME}
 export WANDB_RESUME=allow
 export HF_HOME=${PROJECT_DIR}/lgma_data/.hf_cache
@@ -76,7 +85,7 @@ if [[ -n "${latest_checkpoint}" ]]; then
   resume_args=(--resume-from-checkpoint "${latest_checkpoint}")
 fi
 
-torchrun --standalone --nproc_per_node=4 experiments/train_bert_mlm.py \
+python -m torch.distributed.run --standalone --nproc_per_node=4 experiments/train_bert_mlm.py \
   --model-name-or-path "${MODEL_NAME}" \
   --initialization "${INITIALIZATION}" \
   "${ATTENTION_ARGS[@]}" \
