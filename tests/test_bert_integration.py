@@ -10,6 +10,7 @@ import pytest
 from lgma.bert import (
     BertGtMhaConfig,
     BertGtMhaSelfAttention,
+    bert_parameter_counts,
     initialize_gt_mha_from_bert_attention,
     load_bert_masked_lm,
     load_bert_sequence_classifier,
@@ -177,6 +178,37 @@ def test_hugging_face_bert_forward_after_replacement() -> None:
     assert outputs.logits.shape == (2, 8, config.vocab_size)
     assert torch.isfinite(outputs.loss)
     assert outputs.attentions[0].shape == (2, 12, 8, 8)
+
+
+def test_bert_parameter_counts_include_self_and_output_attention() -> None:
+    transformers = pytest.importorskip("transformers")
+    config = transformers.BertConfig(
+        vocab_size=101,
+        hidden_size=96,
+        num_hidden_layers=2,
+        num_attention_heads=12,
+        intermediate_size=192,
+    )
+    model = transformers.BertForMaskedLM(config)
+    counts = bert_parameter_counts(model)
+    layers = model.bert.encoder.layer
+    expected_self_attention = sum(
+        parameter.numel()
+        for layer in layers
+        for parameter in layer.attention.self.parameters()
+    )
+    expected_output = sum(
+        parameter.numel()
+        for layer in layers
+        for parameter in layer.attention.output.parameters()
+    )
+    assert counts["model_parameter_count"] == sum(
+        parameter.numel() for parameter in model.parameters()
+    )
+    assert counts["trainable_parameter_count"] == counts["model_parameter_count"]
+    assert counts["self_attention_parameter_count"] == expected_self_attention
+    assert counts["attention_output_parameter_count"] == expected_output
+    assert counts["attention_block_parameter_count"] == expected_self_attention + expected_output
 
 
 def test_saved_gt_mha_checkpoint_round_trip(tmp_path) -> None:

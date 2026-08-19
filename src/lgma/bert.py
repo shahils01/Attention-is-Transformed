@@ -181,6 +181,30 @@ def _bert_encoder_layers(model: nn.Module) -> nn.ModuleList:
     raise ValueError("expected a Hugging Face BERT model exposing bert.encoder.layer")
 
 
+def bert_parameter_counts(model: nn.Module) -> dict[str, int]:
+    """Return paper-facing BERT parameter counts without double-counting tensors."""
+    layers = _bert_encoder_layers(model)
+    self_attention = sum(
+        parameter.numel()
+        for layer in layers
+        for parameter in layer.attention.self.parameters()
+    )
+    attention_output = sum(
+        parameter.numel()
+        for layer in layers
+        for parameter in layer.attention.output.parameters()
+    )
+    return {
+        "model_parameter_count": sum(parameter.numel() for parameter in model.parameters()),
+        "trainable_parameter_count": sum(
+            parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+        ),
+        "self_attention_parameter_count": self_attention,
+        "attention_output_parameter_count": attention_output,
+        "attention_block_parameter_count": self_attention + attention_output,
+    }
+
+
 def replace_bert_self_attention(
     model: nn.Module,
     *,

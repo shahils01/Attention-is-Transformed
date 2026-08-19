@@ -25,7 +25,7 @@ set -euo pipefail
 
 PROJECT_DIR=/work/hdd/bicn/anayak2
 REPO_DIR=${PROJECT_DIR}/repos/Attention-is-Transformed
-VENV_DIR=${PROJECT_DIR}/venvs/lgma
+VENV_DIR=${PROJECT_DIR}/venvs/lgma-clean
 INITIALIZATION=${INITIALIZATION:-random}
 SEED=${SEED:-42}
 MAX_STEPS=${MAX_STEPS:-100000}

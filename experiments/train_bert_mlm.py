@@ -9,7 +9,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from lgma.bert import GT_MHA_BERT_ATTENTION_TYPES, load_bert_masked_lm
+from lgma.bert import GT_MHA_BERT_ATTENTION_TYPES, bert_parameter_counts, load_bert_masked_lm
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,6 +82,9 @@ def main() -> None:
     )
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
+    parameter_counts = bert_parameter_counts(model)
+    for name, value in parameter_counts.items():
+        setattr(model.config, name, value)
     dataset_args = {"name": args.dataset_config} if args.dataset_config else {}
     raw = load_dataset(args.dataset_name, **dataset_args)
     missing = {s for s in (args.train_split, args.validation_split) if s not in raw}
@@ -138,6 +141,7 @@ def main() -> None:
         "attention_type": args.attention_type, "num_base_heads": args.num_base_heads,
         "num_generators": args.num_generators, "enforce_paper_gt_mha": args.enforce_paper_gt_mha,
         "teacher_student_distillation": False, "replacement_audit": audit,
+        "parameter_counts": parameter_counts,
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
     }
     (args.output_dir / "bert_gt_mha_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
