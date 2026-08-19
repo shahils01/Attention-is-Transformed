@@ -134,8 +134,10 @@ class BertGtMhaSelfAttention(nn.Module):
         if head_mask is not None:
             probs = probs * head_mask.to(device=probs.device, dtype=probs.dtype)
         context = torch.einsum("bhts,bhsd->bhtd", probs, self.gt_attention._expand_values(v))
-        batch, _, sequence, _ = context.shape
-        context = context.transpose(1, 2).contiguous().view(batch, sequence, self.hidden_size)
+        # Apply GT-MHA's per-head Value Lie transformations before returning to
+        # BERT's surrounding self-output projection.  ``out_proj`` is Identity
+        # in this adapter because BertSelfOutput already owns that projection.
+        context = self.gt_attention._output_projection(context)
         return (context, probs) if output_attentions else (context,)
 
 

@@ -70,6 +70,32 @@ def test_bert_gt_mha_forward_and_padding_mask() -> None:
     assert torch.allclose(probabilities[1, :, :, 4:], torch.zeros_like(probabilities[1, :, :, 4:]))
 
 
+def test_bert_gt_mha_value_lie_transform_participates_in_backward() -> None:
+    torch.manual_seed(0)
+    module = BertGtMhaSelfAttention(
+        BertGtMhaConfig(
+            hidden_size=96,
+            num_attention_heads=12,
+            attention_probs_dropout_prob=0.0,
+            attention_type="gt_mha_residual",
+        )
+    )
+    hidden = torch.randn(2, 5, 96)
+    context = module(hidden, attention_mask=torch.ones(2, 5))[0]
+    context.square().mean().backward()
+
+    missing_gradients = [
+        name
+        for name, parameter in module.named_parameters()
+        if parameter.requires_grad and parameter.grad is None
+    ]
+    assert missing_gradients == []
+    for parameter_name in ("value_generators", "value_theta"):
+        gradient = getattr(module.gt_attention, parameter_name).grad
+        assert gradient is not None
+        assert torch.isfinite(gradient).all()
+
+
 def test_teacher_head_averaging_initializes_all_three_base_projections() -> None:
     teacher = FakeBertSelfAttention(96)
     with torch.no_grad():
