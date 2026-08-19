@@ -46,7 +46,7 @@ case "${ATTENTION_TYPE}" in
   gt_mha_exact)
     ATTENTION_ARGS=(
       --attention-type gt_mha_exact
-      --num-base-heads 4
+      --num-base-heads 6
       --num-generators 8
       --generator-mixing "${GENERATOR_MIXING}"
       "${PAPER_ARGS[@]}"
