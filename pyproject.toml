@@ -31,6 +31,12 @@ vla = [
 tracking = [
   "wandb",
 ]
+bert = [
+  "accelerate",
+  "datasets",
+  "evaluate",
+  "transformers",
+]
 eval = [
   "imageio",
   "openai",

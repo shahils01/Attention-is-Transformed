@@ -246,6 +246,77 @@ For Slurm multi-GPU jobs, use the same script under `srun` or `torchrun`
 according to the Palmetto job template. Disable auto-DDP with `--no_ddp` for
 single-process debugging.
 
+## BERT checkpoint and GT-MHA experiments
+
+Install the optional BERT stack:
+
+```bash
+pip install -e '.[bert,tracking]'
+```
+
+`experiments/train_bert_mlm.py` uses one Hugging Face BERT training path for
+both controls. `mha` leaves the official checkpoint's attention untouched.
+`gt_mha_exact` replaces only `bert.encoder.layer[*].attention.self`; the
+checkpoint-initialized embeddings, feed-forward blocks, output projections,
+normalization layers, and MLM head remain unchanged. GT-MHA's reduced Q/K/V
+bases are initialized by averaging contiguous groups of checkpoint heads, and
+the replacement audit is written to `bert_gt_mha_manifest.json`.
+
+Checkpoint conversion followed by MLM recovery:
+
+```bash
+python experiments/train_bert_mlm.py \
+  --model-name-or-path google-bert/bert-base-uncased \
+  --initialization checkpoint \
+  --attention-type gt_mha_exact \
+  --num-base-heads 4 \
+  --num-generators 8 \
+  --enforce-paper-gt-mha \
+  --output-dir outputs/bert-base-gt-mha-recovery
+```
+
+The primary from-scratch comparison uses the same command and data pipeline
+for both attention mechanisms, changing only `--attention-type`:
+
+```bash
+python experiments/train_bert_mlm.py \
+  --model-name-or-path google-bert/bert-base-uncased \
+  --initialization random \
+  --attention-type mha \
+  --output-dir outputs/bert-base-mha-scratch
+
+python experiments/train_bert_mlm.py \
+  --model-name-or-path google-bert/bert-base-uncased \
+  --initialization random \
+  --attention-type gt_mha_exact \
+  --output-dir outputs/bert-base-gt-mha-scratch
+```
+
+This runner implements fixed-length masked-language-model training. It does not
+silently add teacher-student distillation or next-sentence prediction. The
+DeltaAI launcher `deltaai/train_bert_mlm_gh200x4.slurm` supports `mha` and
+`gt_mha_exact` with identical optimization settings.
+
+Fine-tune the official MHA checkpoint or its direct GT-MHA conversion on any
+GLUE task with the same runner and hyperparameters:
+
+```bash
+python experiments/finetune_bert_glue.py \
+  --task mnli \
+  --attention-type mha \
+  --output-dir outputs/bert-base-mha-mnli
+
+python experiments/finetune_bert_glue.py \
+  --task mnli \
+  --attention-type gt_mha_exact \
+  --output-dir outputs/bert-base-gt-mha-mnli
+```
+
+The GLUE path starts both variants from the same official checkpoint and uses
+ordinary supervised task loss. It does not use a teacher or distillation loss.
+Use `deltaai/finetune_bert_glue_gh200x4.slurm` for matched DeltaAI runs; vary
+`TASK`, `ATTENTION_TYPE`, and `SEED` through `sbatch --export`.
+
 ### Fair TinyStories Runtime Comparisons
 
 The TinyStories runner logs normalized efficiency coordinates for reviewer-safe
