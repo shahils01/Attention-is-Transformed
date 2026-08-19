@@ -8,7 +8,7 @@
 # Set INITIALIZATION=random for the primary from-scratch architecture test.
 # The default checkpoint mode is the secondary pretrained-conversion test.
 #SBATCH --job-name=bert-attn
-#SBATCH --account=bicn-dtai-gh
+#SBATCH --account=biad-dtai-gh
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -16,12 +16,12 @@
 #SBATCH --mem=256g
 #SBATCH --gpus-per-node=4
 #SBATCH --time=48:00:00
-#SBATCH --output=/work/hdd/bicn/anayak2/logs/%x_%j.out
-#SBATCH --error=/work/hdd/bicn/anayak2/logs/%x_%j.err
+#SBATCH --output=/work/hdd/biad/sshaik4/logs/%x_%j.out
+#SBATCH --error=/work/hdd/biad/sshaik4/logs/%x_%j.err
 
 set -euo pipefail
 
-PROJECT_DIR=/work/hdd/bicn/anayak2
+PROJECT_DIR=/work/hdd/biad/sshaik4
 REPO_DIR=${PROJECT_DIR}/repos/Attention-is-Transformed
 VENV_DIR=${PROJECT_DIR}/venvs/lgma
 ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to mha or gt_mha_exact}
@@ -58,6 +58,11 @@ export OMP_NUM_THREADS=4
 export WANDB_PROJECT
 export WANDB_RUN_ID=${RUN_NAME}
 export WANDB_RESUME=allow
+export HF_HOME=${PROJECT_DIR}/lgma_data/.hf_cache
+export HF_HUB_CACHE=${HF_HOME}/hub
+export HF_DATASETS_CACHE=${HF_HOME}/datasets
+export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+export HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-1}
 
 mkdir -p "${OUTPUT_DIR}" "${PROJECT_DIR}/logs"
 cd "${REPO_DIR}"

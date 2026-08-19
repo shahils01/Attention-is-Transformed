@@ -317,6 +317,26 @@ ordinary supervised task loss. It does not use a teacher or distillation loss.
 Use `deltaai/finetune_bert_glue_gh200x4.slurm` for matched DeltaAI runs; vary
 `TASK`, `ATTENTION_TYPE`, and `SEED` through `sbatch --export`.
 
+On the DeltaAI `sshaik4` account, populate the shared offline cache before
+submitting either training launcher:
+
+```bash
+sbatch deltaai/precache_bert_data_sshaik4.slurm
+```
+
+The cache is stored under
+`/work/hdd/biad/sshaik4/lgma_data/.hf_cache`; both DeltaAI BERT launchers use
+that path with Hugging Face offline mode enabled.
+
+The equivalent Palmetto pre-cache job is:
+
+```bash
+sbatch palmetto/precache_bert_data_shahils.slurm
+```
+
+It uses `/scratch/shahils/hf_cache` and installs the missing `evaluate` package
+into the existing `llava_video` Conda environment when necessary.
+
 ### Fair TinyStories Runtime Comparisons
 
 The TinyStories runner logs normalized efficiency coordinates for reviewer-safe
