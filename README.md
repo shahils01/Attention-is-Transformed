@@ -223,6 +223,46 @@ This is not an instruction-tuned chatbot; it is a character-level language
 model. The "chat" script prompts for text and samples a continuation from the
 trained network.
 
+### Paired LGMA vs. MHA story-completion benchmark
+
+The repository includes 100 original Figure-6-style narrative prefixes across
+story continuation, consistency, cause and effect, multi-character interaction,
+emotional development, morals, long-range retention, and age-appropriate
+language. Generate one matched continuation from each checkpoint with:
+
+```bash
+python experiments/compare_tinystories_prompts.py \
+  --checkpoint lgma=ckpts/tinystories_lgma_quad_b4_h16_g8/checkpoint_step_250100.pt \
+  --checkpoint mha=ckpts/tinystories_mha_h16/checkpoint_step_266200.pt \
+  --data_path /path/to/TinyStoriesV2-GPT4-train.txt \
+  --val_data_path /path/to/TinyStoriesV2-GPT4-valid.txt \
+  --device cuda \
+  --precision bf16
+```
+
+The benchmark definition and rubric metadata are documented in
+`benchmarks/README.md`. Results are written incrementally, so interrupted runs
+can resume without regenerating completed model/prompt pairs. On DeltaAI, submit
+`deltaai/infer_tinystories_prompt_comparison.slurm` with `sbatch`.
+
+To draw a balanced 30-prompt subset, randomize LGMA/MHA as Candidate A/B, score
+grammar, creativity, consistency, theme alignment, and overall quality from
+1-10, then restore model identities locally, use:
+
+```bash
+python experiments/evaluate_blind_tinystories.py prepare --num-prompts 30
+python experiments/evaluate_blind_tinystories.py judge --model gpt-5.6
+python experiments/evaluate_blind_tinystories.py unblind
+```
+
+For a Clemson RCD API key, export it as `RCD_LLM_API_KEY` and add
+`--provider rcd-openai`; see `benchmarks/README.md` for the gateway model-list
+command and a complete example.
+
+Only `blind.jsonl` is read by the API judging stage. The private
+`blind_mapping.jsonl` is used later by the local unblinding stage. See
+`benchmarks/README.md` for manual judging and explicit path examples.
+
 For multi-A100 DDP, launch with `torchrun`. The runner automatically enables
 DDP when `WORLD_SIZE > 1`; rank 0 writes logs/checkpoints/reports.
 

@@ -33,6 +33,20 @@ def build_tokenizer(train_text: str, val_text: str | None) -> CharTokenizer:
     return CharTokenizer(train_text + val_text)
 
 
+def build_tokenizer_from_files(*paths: Path | None) -> CharTokenizer:
+    """Recreate the character vocabulary without retaining the corpus in memory."""
+    chars: set[str] = set()
+    for path in paths:
+        if path is None:
+            continue
+        with path.open("r", encoding="utf-8") as handle:
+            while chunk := handle.read(1024 * 1024):
+                chars.update(chunk)
+    if not chars:
+        raise SystemExit("the tokenizer source files contain no text")
+    return CharTokenizer("".join(chars))
+
+
 def paths_from_checkpoint(
     checkpoint: dict[str, object],
     data_path: Path | None,
@@ -75,6 +89,49 @@ def load_tinystories_checkpoint(
     model.load_state_dict(state)
     model.eval()
     return model, tokenizer, train_encoded, val_encoded, config, int(checkpoint.get("step", 0))
+
+
+def load_tinystories_generation_checkpoint(
+    checkpoint_path: Path,
+    device: torch.device,
+    data_path: Path | None = None,
+    val_data_path: Path | None = None,
+) -> tuple[TinyTransformerLM, CharTokenizer, dict[str, object], int]:
+    """Load only what generation needs from a full trainer checkpoint.
+
+    Trainer checkpoints also contain large optimizer states. They are memory
+    mapped on CPU rather than copied to the GPU, and the corpus is scanned only
+    for its character vocabulary instead of being fully tokenized.
+    """
+    checkpoint = load_full_checkpoint(
+        checkpoint_path,
+        map_location="cpu",
+        mmap=True,
+    )
+    train_path, val_path = paths_from_checkpoint(checkpoint, data_path, val_data_path)
+    tokenizer = build_tokenizer_from_files(train_path, val_path)
+
+    config = checkpoint.get("model_config")
+    if not isinstance(config, dict):
+        raise SystemExit("checkpoint is missing model_config")
+    state = checkpoint.get("model_state")
+    if not isinstance(state, dict):
+        raise SystemExit("checkpoint is missing model_state")
+    embedding = state.get("token_embedding.weight")
+    if not isinstance(embedding, torch.Tensor):
+        raise SystemExit("checkpoint model_state is missing token_embedding.weight")
+    expected_vocab_size = int(embedding.shape[0])
+    if tokenizer.vocab_size != expected_vocab_size:
+        raise SystemExit(
+            "tokenizer vocabulary mismatch: checkpoint expects "
+            f"{expected_vocab_size} characters but the supplied corpus has "
+            f"{tokenizer.vocab_size}"
+        )
+
+    model = TinyTransformerLM(vocab_size=tokenizer.vocab_size, **config).to(device)
+    model.load_state_dict(state)
+    model.eval()
+    return model, tokenizer, config, int(checkpoint.get("step", 0))
 
 
 @torch.no_grad()
