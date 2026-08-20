@@ -31,7 +31,7 @@ MAX_STEPS=${MAX_STEPS:-100000}
 MODEL_NAME=${MODEL_NAME:-google-bert/bert-base-uncased}
 WANDB_PROJECT=${WANDB_PROJECT:-bert-gt-mha}
 GENERATOR_MIXING=${GENERATOR_MIXING:-softmax}
-ENFORCE_PAPER_GT_MHA=${ENFORCE_PAPER_GT_MHA:-true}
+ENFORCE_PAPER_GT_MHA=${ENFORCE_PAPER_GT_MHA:-false}
 
 case "${ENFORCE_PAPER_GT_MHA}" in
   true) PAPER_ARGS=(--enforce-paper-gt-mha) ;;
