@@ -27,7 +27,7 @@ MAX_STEPS=${MAX_STEPS:-100000}
 MODEL_NAME=${MODEL_NAME:-google-bert/bert-base-uncased}
 WANDB_PROJECT=${WANDB_PROJECT:-bert-gt-mha}
 
-RUN_NAME=bert_base_gt_mha_residual_${INITIALIZATION}_seed${SEED}_mixnone_v1
+RUN_NAME=bert_base_gt_mha_residual_b4g12h12_${INITIALIZATION}_seed${SEED}_softmaxmixing
 OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/${RUN_NAME}
 
 module load python/miniforge3_pytorch/2.12.0
@@ -60,8 +60,8 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 experiments/trai
   --initialization "${INITIALIZATION}" \
   --attention-type gt_mha_residual \
   --num-base-heads 4 \
-  --num-generators 8 \
-  --generator-mixing none \
+  --num-generators 12 \
+  --generator-mixing softmax \
   --no-enforce-paper-gt-mha \
   --use-sdpa \
   --fuse-base-qkv \
