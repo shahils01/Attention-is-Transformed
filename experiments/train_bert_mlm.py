@@ -23,6 +23,9 @@ def parse_args() -> argparse.Namespace:
         "--generator-mixing", "--generator_mixing",
         dest="generator_mixing", choices=["softmax", "none"], default="softmax",
     )
+    p.add_argument("--use-sdpa", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--fuse-base-qkv", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--sdpa-gqa-mode", choices=["auto", "native", "expand"], default="auto")
     p.add_argument("--enforce-paper-gt-mha", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--dataset-name", default="wikitext")
     p.add_argument("--dataset-config", default="wikitext-103-raw-v1")
@@ -81,6 +84,8 @@ def main() -> None:
         args.model_name_or_path, attention_type=args.attention_type,
         initialization=args.initialization, num_base_heads=args.num_base_heads,
         num_generators=args.num_generators, generator_mixing=args.generator_mixing,
+        use_sdpa=args.use_sdpa, fuse_base_qkv=args.fuse_base_qkv,
+        sdpa_gqa_mode=args.sdpa_gqa_mode,
         enforce_paper_gt_mha=args.enforce_paper_gt_mha,
         trust_remote_code=args.trust_remote_code,
     )
@@ -144,6 +149,8 @@ def main() -> None:
         "model_name_or_path": args.model_name_or_path, "initialization": args.initialization,
         "attention_type": args.attention_type, "num_base_heads": args.num_base_heads,
         "num_generators": args.num_generators, "generator_mixing": args.generator_mixing,
+        "use_sdpa": args.use_sdpa, "fuse_base_qkv": args.fuse_base_qkv,
+        "sdpa_gqa_mode": args.sdpa_gqa_mode,
         "enforce_paper_gt_mha": args.enforce_paper_gt_mha,
         "teacher_student_distillation": False, "replacement_audit": audit,
         "parameter_counts": parameter_counts,

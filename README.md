@@ -302,8 +302,16 @@ python experiments/train_bert_mlm.py \
   --attention-type gt_mha_residual \
   --generator-mixing none \
   --no-enforce-paper-gt-mha \
+  --use-sdpa \
+  --fuse-base-qkv \
+  --sdpa-gqa-mode native \
   --output-dir outputs/bert-base-gt-mha-raw-mixing
 ```
+
+The optimized flags preserve the GT-MHA computation while using a fused base
+Q/K/V projection and PyTorch SDPA with four native GQA key/value heads. Calls
+that request attention weights or supply a BERT head mask automatically retain
+the explicit reference path.
 
 This runner implements fixed-length masked-language-model training. It does not
 silently add teacher-student distillation or next-sentence prediction. The

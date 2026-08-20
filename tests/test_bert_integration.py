@@ -97,6 +97,49 @@ def test_bert_gt_mha_value_lie_transform_participates_in_backward() -> None:
         assert torch.isfinite(gradient).all()
 
 
+def test_bert_optimized_sdpa_fused_qkv_matches_reference_forward_and_backward() -> None:
+    torch.manual_seed(3)
+    common = {
+        "hidden_size": 96,
+        "num_attention_heads": 12,
+        "attention_probs_dropout_prob": 0.0,
+        "attention_type": "gt_mha_residual",
+    }
+    reference = BertGtMhaSelfAttention(BertGtMhaConfig(**common))
+    optimized = BertGtMhaSelfAttention(
+        BertGtMhaConfig(
+            **common,
+            use_sdpa=True,
+            fuse_base_qkv=True,
+            sdpa_gqa_mode="native",
+        )
+    )
+    optimized.load_state_dict(reference.state_dict())
+    reference.eval()
+    optimized.eval()
+    mask = torch.tensor([[1, 1, 1, 1, 0], [1, 1, 1, 1, 1]])
+    upstream = torch.randn(2, 5, 96)
+    reference_input = torch.randn(2, 5, 96, requires_grad=True)
+    optimized_input = reference_input.detach().clone().requires_grad_(True)
+
+    reference_output = reference(reference_input, attention_mask=mask)[0]
+    optimized_output = optimized(optimized_input, attention_mask=mask)[0]
+    (reference_output * upstream).sum().backward()
+    (optimized_output * upstream).sum().backward()
+
+    assert torch.allclose(reference_output, optimized_output, atol=1e-5, rtol=1e-5)
+    assert torch.allclose(reference_input.grad, optimized_input.grad, atol=1e-5, rtol=1e-5)
+    reference_gradients = dict(reference.named_parameters())
+    for name, parameter in optimized.named_parameters():
+        assert parameter.grad is not None
+        assert torch.allclose(
+            reference_gradients[name].grad,
+            parameter.grad,
+            atol=2e-5,
+            rtol=2e-4,
+        ), name
+
+
 def test_teacher_head_averaging_initializes_all_three_base_projections() -> None:
     teacher = FakeBertSelfAttention(96)
     with torch.no_grad():

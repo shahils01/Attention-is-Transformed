@@ -25,6 +25,9 @@ class BertGtMhaConfig:
     num_generators: int = 8
     generator_type: str = "full"
     generator_mixing: str = "softmax"
+    use_sdpa: bool = False
+    fuse_base_qkv: bool = False
+    sdpa_gqa_mode: str = "auto"
     attention_bias: bool = True
 
     def __post_init__(self) -> None:
@@ -62,7 +65,7 @@ class BertGtMhaSelfAttention(nn.Module):
             bias=config.attention_bias,
             generator_type=config.generator_type,
             generator_mixing=config.generator_mixing,
-            use_sdpa=False,
+            use_sdpa=config.use_sdpa,
             causal=False,
             stabilize_generators=False,
             normalize_generators=False,
@@ -74,6 +77,8 @@ class BertGtMhaSelfAttention(nn.Module):
             learn_head_temperature=False,
             value_transform="lie",
             num_base_heads=config.num_base_heads,
+            fuse_base_qkv=config.fuse_base_qkv,
+            sdpa_gqa_mode=config.sdpa_gqa_mode,
         )
         # BERT's surrounding BertSelfOutput retains the official output projection.
         self.gt_attention.out_proj = nn.Identity()
@@ -123,10 +128,25 @@ class BertGtMhaSelfAttention(nn.Module):
             raise ValueError("BertGtMhaSelfAttention does not support decoder KV caching")
         if hidden_states.ndim != 3:
             raise ValueError("hidden_states must have shape [batch, sequence, hidden]")
+        additive_mask = self._mask(attention_mask, hidden_states)
+        if head_mask is None:
+            result = self.gt_attention(
+                hidden_states,
+                attn_mask=additive_mask,
+                need_weights=output_attentions,
+            )
+            if output_attentions:
+                context, probabilities = result
+                return context, probabilities
+            return (result,)
+
+        # BERT head masks act on attention probabilities, so retain the
+        # explicit path when one is supplied. The normal MLM path above can
+        # use fused QKV projection and native SDPA/GQA.
         q, k, v = self.gt_attention._project(hidden_states)
         scores = self.gt_attention.compute_scores(q, k, apply_scale=True)
         scores = self.gt_attention._prepare_additive_mask(
-            scores, self._mask(attention_mask, hidden_states), None
+            scores, additive_mask, None
         )
         probs = torch.softmax(scores.float(), dim=-1).to(scores.dtype)
         probs = self.gt_attention.attn_dropout(probs)
@@ -211,6 +231,9 @@ def replace_bert_self_attention(
     num_base_heads: int = 4,
     num_generators: int = 8,
     generator_mixing: str = "softmax",
+    use_sdpa: bool = False,
+    fuse_base_qkv: bool = False,
+    sdpa_gqa_mode: str = "auto",
     initialize_from_mha: bool = True,
     enforce_paper_gt_mha: bool = True,
 ) -> list[dict[str, Any]]:
@@ -236,6 +259,9 @@ def replace_bert_self_attention(
                 num_base_heads=num_base_heads,
                 num_generators=num_generators,
                 generator_mixing=generator_mixing,
+                use_sdpa=use_sdpa,
+                fuse_base_qkv=fuse_base_qkv,
+                sdpa_gqa_mode=sdpa_gqa_mode,
             )
         )
         if enforce_paper_gt_mha:
@@ -269,6 +295,9 @@ def load_bert_masked_lm(
     num_base_heads: int = 4,
     num_generators: int = 8,
     generator_mixing: str = "softmax",
+    use_sdpa: bool = False,
+    fuse_base_qkv: bool = False,
+    sdpa_gqa_mode: str = "auto",
     enforce_paper_gt_mha: bool = True,
     trust_remote_code: bool = False,
 ) -> tuple[nn.Module, list[dict[str, Any]]]:
@@ -286,6 +315,9 @@ def load_bert_masked_lm(
         attention_type = saved_type
         num_base_heads, num_generators = manifest["num_base_heads"], manifest["num_generators"]
         generator_mixing = manifest.get("generator_mixing", "softmax")
+        use_sdpa = bool(manifest.get("use_sdpa", use_sdpa))
+        fuse_base_qkv = bool(manifest.get("fuse_base_qkv", fuse_base_qkv))
+        sdpa_gqa_mode = manifest.get("sdpa_gqa_mode", sdpa_gqa_mode)
     attention_type = attention_type or "mha"
     if manifest and attention_type in GT_MHA_BERT_ATTENTION_TYPES:
         if not state_path.is_file():
@@ -295,6 +327,8 @@ def load_bert_masked_lm(
         audit = replace_bert_self_attention(
             model, attention_type=attention_type, num_base_heads=int(num_base_heads),
             num_generators=int(num_generators), generator_mixing=generator_mixing,
+            use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
+            sdpa_gqa_mode=sdpa_gqa_mode,
             initialize_from_mha=False,
             enforce_paper_gt_mha=enforce_paper_gt_mha,
         )
@@ -314,6 +348,8 @@ def load_bert_masked_lm(
     return model, replace_bert_self_attention(
         model, attention_type=attention_type, num_base_heads=num_base_heads,
         num_generators=num_generators, generator_mixing=generator_mixing,
+        use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
+        sdpa_gqa_mode=sdpa_gqa_mode,
         initialize_from_mha=initialization == "checkpoint",
         enforce_paper_gt_mha=enforce_paper_gt_mha,
     )
@@ -327,6 +363,9 @@ def load_bert_sequence_classifier(
     num_base_heads: int = 4,
     num_generators: int = 8,
     generator_mixing: str = "softmax",
+    use_sdpa: bool = False,
+    fuse_base_qkv: bool = False,
+    sdpa_gqa_mode: str = "auto",
     enforce_paper_gt_mha: bool = True,
     trust_remote_code: bool = False,
 ) -> tuple[nn.Module, list[dict[str, Any]]]:
@@ -340,6 +379,8 @@ def load_bert_sequence_classifier(
     return model, replace_bert_self_attention(
         model, attention_type=attention_type, num_base_heads=num_base_heads,
         num_generators=num_generators, generator_mixing=generator_mixing,
+        use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
+        sdpa_gqa_mode=sdpa_gqa_mode,
         initialize_from_mha=True,
         enforce_paper_gt_mha=enforce_paper_gt_mha,
     )
