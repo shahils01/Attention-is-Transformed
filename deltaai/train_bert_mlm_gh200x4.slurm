@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# BERT MLM recovery/from-scratch runner for the official MHA checkpoint and
-# paper-faithful GT-MHA. Submit once per ATTENTION_TYPE.
+# BERT MLM recovery/from-scratch runner for MHA and GT-MHA. By default this
+# launches the six-base-head GT-MHA residual experiment from scratch.
 #
+#   sbatch deltaai/train_bert_mlm_gh200x4.slurm
 #   sbatch --export=ALL,ATTENTION_TYPE=mha deltaai/train_bert_mlm_gh200x4.slurm
-#   sbatch --export=ALL,ATTENTION_TYPE=gt_mha_exact deltaai/train_bert_mlm_gh200x4.slurm
 #
-# Set INITIALIZATION=random for the primary from-scratch architecture test.
-# The default checkpoint mode is the secondary pretrained-conversion test.
+# Set ENFORCE_PAPER_GT_MHA=true only with the paper configuration of four
+# base heads and eight generators.
 #SBATCH --job-name=bert-attn
 #SBATCH --account=biad-dtai-gh
 #SBATCH --partition=ghx4
@@ -24,8 +24,10 @@ set -euo pipefail
 PROJECT_DIR=/work/hdd/biad/sshaik4
 REPO_DIR=/u/sshaik4/Attention-is-Transformed
 VENV_DIR=${PROJECT_DIR}/venvs/lgma-clean
-ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to mha, gt_mha_exact, or gt_mha_residual}
-INITIALIZATION=${INITIALIZATION:-checkpoint}
+ATTENTION_TYPE=${ATTENTION_TYPE:-gt_mha_residual}
+INITIALIZATION=${INITIALIZATION:-random}
+NUM_BASE_HEADS=${NUM_BASE_HEADS:-6}
+NUM_GENERATORS=${NUM_GENERATORS:-8}
 SEED=${SEED:-42}
 MAX_STEPS=${MAX_STEPS:-100000}
 MODEL_NAME=${MODEL_NAME:-google-bert/bert-base-uncased}
@@ -46,8 +48,8 @@ case "${ATTENTION_TYPE}" in
   gt_mha_exact)
     ATTENTION_ARGS=(
       --attention-type gt_mha_exact
-      --num-base-heads 6
-      --num-generators 8
+      --num-base-heads "${NUM_BASE_HEADS}"
+      --num-generators "${NUM_GENERATORS}"
       --generator-mixing "${GENERATOR_MIXING}"
       --use-sdpa
       --fuse-base-qkv
@@ -58,8 +60,8 @@ case "${ATTENTION_TYPE}" in
   gt_mha_residual)
     ATTENTION_ARGS=(
       --attention-type gt_mha_residual
-      --num-base-heads 6
-      --num-generators 8
+      --num-base-heads "${NUM_BASE_HEADS}"
+      --num-generators "${NUM_GENERATORS}"
       --generator-mixing "${GENERATOR_MIXING}"
       --use-sdpa
       --fuse-base-qkv
@@ -77,7 +79,7 @@ MIXING_SUFFIX=
 if [[ "${ATTENTION_TYPE}" != "mha" && "${GENERATOR_MIXING}" != "softmax" ]]; then
   MIXING_SUFFIX=_mix${GENERATOR_MIXING}
 fi
-RUN_NAME=bert_base_${ATTENTION_TYPE}_b6g8h12_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}
+RUN_NAME=bert_base_${ATTENTION_TYPE}_b${NUM_BASE_HEADS}g${NUM_GENERATORS}h12_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}
 OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/${RUN_NAME}
 
 module load python/miniforge3_pytorch/2.12.0
