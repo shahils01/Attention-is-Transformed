@@ -21,8 +21,8 @@
 
 set -euo pipefail
 
-PROJECT_DIR=/work/hdd/biad/sshaik4
-REPO_DIR=${PROJECT_DIR}/repos/Attention-is-Transformed
+PROJECT_DIR=/u/sshaik4/
+REPO_DIR=${PROJECT_DIR}/Attention-is-Transformed
 VENV_DIR=${PROJECT_DIR}/venvs/lgma-clean
 ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to mha, gt_mha_exact, or gt_mha_residual}
 INITIALIZATION=${INITIALIZATION:-checkpoint}
