@@ -58,7 +58,7 @@ case "${ATTENTION_TYPE}" in
   gt_mha_residual)
     ATTENTION_ARGS=(
       --attention-type gt_mha_residual
-      --num-base-heads 4
+      --num-base-heads 6
       --num-generators 8
       --generator-mixing "${GENERATOR_MIXING}"
       --use-sdpa
@@ -77,7 +77,7 @@ MIXING_SUFFIX=
 if [[ "${ATTENTION_TYPE}" != "mha" && "${GENERATOR_MIXING}" != "softmax" ]]; then
   MIXING_SUFFIX=_mix${GENERATOR_MIXING}
 fi
-RUN_NAME=bert_base_${ATTENTION_TYPE}_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}_v1
+RUN_NAME=bert_base_${ATTENTION_TYPE}_b6g8h12_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}
 OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/${RUN_NAME}
 
 module load python/miniforge3_pytorch/2.12.0
