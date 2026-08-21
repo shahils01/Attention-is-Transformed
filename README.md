@@ -292,6 +292,16 @@ python experiments/train_bert_mlm.py \
   --output-dir outputs/bert-base-gt-mha-scratch
 ```
 
+GT-MHA base Q/K/V projections use BERT's configured normal initializer rather
+than the generic module's fan-out-dependent Xavier initializer. Training keeps
+dynamic 80/10/10 MLM masking, while validation is pre-masked once with the
+model-independent `--validation-mask-seed` (default `17029`) so every attention
+variant is evaluated on identical masked tokens. The GT-MHA head-coordinate
+parameters `theta` and `value_theta` are placed in the optimizer's zero-weight-
+decay group; the generator matrices retain ordinary weight decay. Because this
+changes optimizer parameter groups, start a fresh run instead of resuming a
+checkpoint created by an older version of the BERT runner.
+
 Generator mixing defaults to the paper configuration, `softmax`. Experimental
 raw signed coefficients can be selected only with paper enforcement disabled:
 

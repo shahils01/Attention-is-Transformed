@@ -20,6 +20,7 @@ class BertGtMhaConfig:
     hidden_size: int
     num_attention_heads: int
     attention_probs_dropout_prob: float = 0.1
+    initializer_range: float = 0.02
     attention_type: str = "gt_mha_exact"
     num_base_heads: int = 4
     num_generators: int = 8
@@ -33,6 +34,8 @@ class BertGtMhaConfig:
     def __post_init__(self) -> None:
         if self.hidden_size <= 0 or self.num_attention_heads <= 0:
             raise ValueError("hidden_size and num_attention_heads must be positive")
+        if self.initializer_range <= 0:
+            raise ValueError("initializer_range must be positive")
         if self.hidden_size % self.num_attention_heads:
             raise ValueError("hidden_size must be divisible by num_attention_heads")
         if self.num_attention_heads % self.num_base_heads:
@@ -82,6 +85,21 @@ class BertGtMhaSelfAttention(nn.Module):
         )
         # BERT's surrounding BertSelfOutput retains the official output projection.
         self.gt_attention.out_proj = nn.Identity()
+        self._reset_base_projections_with_bert_initializer()
+
+    def _reset_base_projections_with_bert_initializer(self) -> None:
+        """Match Hugging Face BERT's projection initialization.
+
+        The generic GT-MHA module uses Xavier initialization, whose variance
+        changes with the number of base heads. BERT instead initializes every
+        linear weight from ``N(0, config.initializer_range)``. Keeping that
+        convention prevents the reduced base projections from starting with
+        substantially larger query/key logits than the MHA control.
+        """
+        for projection in (self.query, self.key, self.value):
+            nn.init.normal_(projection.weight, mean=0.0, std=self.gt_mha_config.initializer_range)
+            if projection.bias is not None:
+                nn.init.zeros_(projection.bias)
 
     @property
     def query(self) -> nn.Linear:
@@ -255,6 +273,7 @@ def replace_bert_self_attention(
                 hidden_size=int(config.hidden_size),
                 num_attention_heads=int(config.num_attention_heads),
                 attention_probs_dropout_prob=float(config.attention_probs_dropout_prob),
+                initializer_range=float(getattr(config, "initializer_range", 0.02)),
                 attention_type=attention_type,
                 num_base_heads=num_base_heads,
                 num_generators=num_generators,
