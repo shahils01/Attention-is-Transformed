@@ -12,7 +12,7 @@ from torch import nn
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from lgma.bert import GT_MHA_BERT_ATTENTION_TYPES, bert_parameter_counts, load_bert_masked_lm
+from lgma.bert import BERT_ATTENTION_TYPES, bert_parameter_counts, load_bert_masked_lm
 
 
 HEAD_COORDINATE_PARAMETER_NAMES = {"theta", "value_theta"}
@@ -125,10 +125,11 @@ def optimizer_parameter_groups(
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("BERT MLM training with official MHA or paper GT-MHA")
+    p = argparse.ArgumentParser("BERT MLM training with MHA, GQA, or paper GT-MHA")
     p.add_argument("--model-name-or-path", default="google-bert/bert-base-uncased")
-    p.add_argument("--attention-type", choices=["mha", *sorted(GT_MHA_BERT_ATTENTION_TYPES)], default="mha")
+    p.add_argument("--attention-type", choices=sorted(BERT_ATTENTION_TYPES), default="mha")
     p.add_argument("--initialization", choices=["checkpoint", "random"], default="checkpoint")
+    p.add_argument("--num-kv-heads", type=int, default=4)
     p.add_argument("--num-base-heads", type=int, default=4)
     p.add_argument("--num-generators", type=int, default=8)
     p.add_argument(
@@ -223,7 +224,8 @@ def main() -> None:
     )
     model, audit = load_bert_masked_lm(
         args.model_name_or_path, attention_type=args.attention_type,
-        initialization=args.initialization, num_base_heads=args.num_base_heads,
+        initialization=args.initialization, num_kv_heads=args.num_kv_heads,
+        num_base_heads=args.num_base_heads,
         num_generators=args.num_generators, generator_mixing=args.generator_mixing,
         use_sdpa=args.use_sdpa, fuse_base_qkv=args.fuse_base_qkv,
         sdpa_gqa_mode=args.sdpa_gqa_mode,
@@ -315,7 +317,8 @@ def main() -> None:
     trainer = Trainer(**trainer_kwargs)
     manifest = {
         "model_name_or_path": args.model_name_or_path, "initialization": args.initialization,
-        "attention_type": args.attention_type, "num_base_heads": args.num_base_heads,
+        "attention_type": args.attention_type, "num_kv_heads": args.num_kv_heads,
+        "num_base_heads": args.num_base_heads,
         "num_generators": args.num_generators, "generator_mixing": args.generator_mixing,
         "use_sdpa": args.use_sdpa, "fuse_base_qkv": args.fuse_base_qkv,
         "sdpa_gqa_mode": args.sdpa_gqa_mode,

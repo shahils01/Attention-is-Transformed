@@ -15,7 +15,12 @@ from train_bert_mlm import (  # noqa: E402
     fixed_validation_mlm_mask,
     optimizer_parameter_groups,
 )
-from lgma.bert import BertGtMhaConfig, BertGtMhaSelfAttention  # noqa: E402
+from lgma.bert import (  # noqa: E402
+    BertGqaConfig,
+    BertGqaSelfAttention,
+    BertGtMhaConfig,
+    BertGtMhaSelfAttention,
+)
 
 
 def test_bert_gt_mha_base_projections_use_bert_initializer() -> None:
@@ -34,6 +39,50 @@ def test_bert_gt_mha_base_projections_use_bert_initializer() -> None:
             projection.weight.std(), torch.tensor(0.02), rtol=0.03, atol=0.0
         )
         assert torch.count_nonzero(projection.bias) == 0
+
+
+def test_bert_gqa_projections_use_bert_initializer() -> None:
+    torch.manual_seed(0)
+    module = BertGqaSelfAttention(
+        BertGqaConfig(
+            hidden_size=768,
+            num_attention_heads=12,
+            num_kv_heads=4,
+            initializer_range=0.02,
+        )
+    )
+
+    for projection in (module.query, module.key, module.value):
+        assert abs(float(projection.weight.mean())) < 8e-4
+        assert torch.isclose(
+            projection.weight.std(), torch.tensor(0.02), rtol=0.04, atol=0.0
+        )
+        assert torch.count_nonzero(projection.bias) == 0
+
+
+def test_gqa_optimizer_has_no_head_coordinates() -> None:
+    module = BertGqaSelfAttention(
+        BertGqaConfig(hidden_size=96, num_attention_heads=12, num_kv_heads=4)
+    )
+
+    def all_parameter_names(model: nn.Module, _forbidden_layer_types):
+        return [name for name, _ in model.named_parameters()]
+
+    groups, coordinate_names = optimizer_parameter_groups(
+        module,
+        weight_decay=0.01,
+        get_parameter_names=all_parameter_names,
+    )
+    parameter_decay = {
+        id(parameter): group["weight_decay"]
+        for group in groups
+        for parameter in group["params"]
+    }
+
+    assert coordinate_names == []
+    assert parameter_decay[id(module.query.weight)] == 0.01
+    assert parameter_decay[id(module.key.weight)] == 0.01
+    assert parameter_decay[id(module.value.weight)] == 0.01
 
 
 def test_fixed_validation_mask_is_repeatable_and_preserves_special_tokens() -> None:

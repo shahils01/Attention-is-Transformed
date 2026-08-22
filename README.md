@@ -255,7 +255,10 @@ pip install -e '.[bert,tracking]'
 ```
 
 `experiments/train_bert_mlm.py` uses one Hugging Face BERT training path for
-both controls. `mha` leaves the official checkpoint's attention untouched.
+all attention baselines. `mha` leaves the official checkpoint's attention untouched.
+`gqa` keeps all 12 query heads while sharing key/value projections across four
+KV heads by default. This conventional GQA baseline is distinct from GT-MHA's
+`--sdpa-gqa-mode`, which only selects an internal execution path.
 `gt_mha_exact` replaces only `bert.encoder.layer[*].attention.self`; the
 checkpoint-initialized embeddings, feed-forward blocks, output projections,
 normalization layers, and MLM head remain unchanged. GT-MHA's reduced Q/K/V
@@ -288,9 +291,21 @@ python experiments/train_bert_mlm.py \
 python experiments/train_bert_mlm.py \
   --model-name-or-path google-bert/bert-base-uncased \
   --initialization random \
+  --attention-type gqa \
+  --num-kv-heads 4 \
+  --output-dir outputs/bert-base-gqa4-scratch
+
+python experiments/train_bert_mlm.py \
+  --model-name-or-path google-bert/bert-base-uncased \
+  --initialization random \
   --attention-type gt_mha_exact \
   --output-dir outputs/bert-base-gt-mha-scratch
 ```
+
+For checkpoint conversion, GQA copies BERT's query projection exactly and
+averages contiguous groups of key/value heads. Random GQA initialization uses
+BERT's configured normal initializer. `--num-kv-heads` must divide 12; setting
+it to 1 runs the multi-query-attention (MQA) special case.
 
 GT-MHA base Q/K/V projections use BERT's configured normal initializer rather
 than the generic module's fan-out-dependent Xavier initializer. Training keeps
@@ -322,6 +337,9 @@ The optimized flags preserve the GT-MHA computation while using a fused base
 Q/K/V projection and PyTorch SDPA with four native GQA key/value heads. Calls
 that request attention weights or supply a BERT head mask automatically retain
 the explicit reference path.
+
+The DeltaAI launcher accepts the same baseline as
+`ATTENTION_TYPE=gqa,NUM_KV_HEADS=4`.
 
 This runner implements fixed-length masked-language-model training. It does not
 silently add teacher-student distillation or next-sentence prediction. The

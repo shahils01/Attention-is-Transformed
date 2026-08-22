@@ -8,9 +8,12 @@ from torch import nn
 import pytest
 
 from lgma.bert import (
+    BertGqaConfig,
+    BertGqaSelfAttention,
     BertGtMhaConfig,
     BertGtMhaSelfAttention,
     bert_parameter_counts,
+    initialize_gqa_from_bert_attention,
     initialize_gt_mha_from_bert_attention,
     load_bert_masked_lm,
     load_bert_sequence_classifier,
@@ -69,6 +72,32 @@ def test_bert_gt_mha_forward_and_padding_mask() -> None:
     assert probabilities.shape == (2, 12, 5, 5)
     assert torch.allclose(probabilities[0, :, :, 3:], torch.zeros_like(probabilities[0, :, :, 3:]))
     assert torch.allclose(probabilities[1, :, :, 4:], torch.zeros_like(probabilities[1, :, :, 4:]))
+
+
+def test_bert_gqa_forward_padding_mask_and_backward() -> None:
+    torch.manual_seed(0)
+    module = BertGqaSelfAttention(
+        BertGqaConfig(
+            hidden_size=96,
+            num_attention_heads=12,
+            num_kv_heads=4,
+            attention_probs_dropout_prob=0.0,
+        )
+    )
+    hidden = torch.randn(2, 5, 96, requires_grad=True)
+    mask = torch.tensor([[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]])
+    context, probabilities = module(hidden, attention_mask=mask, output_attentions=True)
+    context.square().mean().backward()
+
+    assert context.shape == (2, 5, 96)
+    assert probabilities.shape == (2, 12, 5, 5)
+    assert torch.allclose(probabilities[0, :, :, 3:], torch.zeros_like(probabilities[0, :, :, 3:]))
+    assert torch.allclose(probabilities[1, :, :, 4:], torch.zeros_like(probabilities[1, :, :, 4:]))
+    assert hidden.grad is not None and torch.isfinite(hidden.grad).all()
+    assert all(
+        parameter.grad is not None and torch.isfinite(parameter.grad).all()
+        for parameter in module.parameters()
+    )
 
 
 def test_bert_gt_mha_value_lie_transform_participates_in_backward() -> None:
@@ -163,6 +192,29 @@ def test_teacher_head_averaging_initializes_all_three_base_projections() -> None
     assert torch.equal(student.value.weight, expected_value)
 
 
+def test_gqa_initialization_copies_queries_and_averages_kv_heads() -> None:
+    teacher = FakeBertSelfAttention(96)
+    with torch.no_grad():
+        for offset, projection in enumerate((teacher.query, teacher.key, teacher.value)):
+            projection.weight.copy_(
+                torch.arange(projection.weight.numel()).view_as(projection.weight) + offset
+            )
+            projection.bias.copy_(
+                torch.arange(projection.bias.numel()).view_as(projection.bias) + offset
+            )
+    student = BertGqaSelfAttention(
+        BertGqaConfig(hidden_size=96, num_attention_heads=12, num_kv_heads=4)
+    )
+    initialize_gqa_from_bert_attention(student, teacher)
+
+    assert torch.equal(student.query.weight, teacher.query.weight)
+    assert torch.equal(student.query.bias, teacher.query.bias)
+    expected_key = teacher.key.weight.view(4, 3, 8, 96).mean(dim=1).reshape(32, 96)
+    expected_value = teacher.value.weight.view(4, 3, 8, 96).mean(dim=1).reshape(32, 96)
+    assert torch.equal(student.key.weight, expected_key)
+    assert torch.equal(student.value.weight, expected_value)
+
+
 def test_replace_bert_attention_is_audited_and_reduces_parameters() -> None:
     model = FakeBertModel()
     audit = replace_bert_self_attention(model, attention_type="gt_mha_exact")
@@ -173,6 +225,27 @@ def test_replace_bert_attention_is_audited_and_reduces_parameters() -> None:
         isinstance(layer.attention.self, BertGtMhaSelfAttention)
         for layer in model.bert.encoder.layer
     )
+
+
+def test_replace_bert_attention_with_gqa_is_audited_and_reduces_parameters() -> None:
+    model = FakeBertModel()
+    audit = replace_bert_self_attention(
+        model, attention_type="gqa", num_kv_heads=4
+    )
+    assert len(audit) == 2
+    assert all(entry["gqa_config"]["num_kv_heads"] == 4 for entry in audit)
+    assert all(entry["attention_parameter_reduction"] > 0 for entry in audit)
+    assert all(
+        isinstance(layer.attention.self, BertGqaSelfAttention)
+        for layer in model.bert.encoder.layer
+    )
+
+
+def test_gqa_rejects_incompatible_kv_head_count() -> None:
+    with pytest.raises(ValueError, match="divisible"):
+        replace_bert_self_attention(
+            FakeBertModel(num_layers=1), attention_type="gqa", num_kv_heads=5
+        )
 
 
 def test_mha_replacement_is_a_noop() -> None:
@@ -229,6 +302,32 @@ def test_hugging_face_bert_forward_after_replacement() -> None:
     )
     model = transformers.BertForMaskedLM(config)
     replace_bert_self_attention(model, attention_type="gt_mha_exact")
+    input_ids = torch.randint(0, config.vocab_size, (2, 8))
+    attention_mask = torch.tensor(
+        [[1, 1, 1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 1, 1, 0]]
+    )
+    outputs = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        labels=input_ids,
+        output_attentions=True,
+    )
+    assert outputs.logits.shape == (2, 8, config.vocab_size)
+    assert torch.isfinite(outputs.loss)
+    assert outputs.attentions[0].shape == (2, 12, 8, 8)
+
+
+def test_hugging_face_bert_forward_after_gqa_replacement() -> None:
+    transformers = pytest.importorskip("transformers")
+    config = transformers.BertConfig(
+        vocab_size=101,
+        hidden_size=96,
+        num_hidden_layers=2,
+        num_attention_heads=12,
+        intermediate_size=192,
+    )
+    model = transformers.BertForMaskedLM(config)
+    replace_bert_self_attention(model, attention_type="gqa", num_kv_heads=4)
     input_ids = torch.randint(0, config.vocab_size, (2, 8))
     attention_mask = torch.tensor(
         [[1, 1, 1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 1, 1, 0]]
@@ -303,6 +402,32 @@ def test_saved_gt_mha_checkpoint_round_trip(tmp_path) -> None:
     assert len(audit) == 1
     expected = model.bert.encoder.layer[0].attention.self.gt_attention.q_proj.weight
     actual = loaded.bert.encoder.layer[0].attention.self.gt_attention.q_proj.weight
+    assert torch.equal(actual, expected)
+
+
+def test_saved_gqa_checkpoint_round_trip(tmp_path) -> None:
+    transformers = pytest.importorskip("transformers")
+    config = transformers.BertConfig(
+        vocab_size=101,
+        hidden_size=96,
+        num_hidden_layers=1,
+        num_attention_heads=12,
+        intermediate_size=192,
+    )
+    model = transformers.BertForMaskedLM(config)
+    replace_bert_self_attention(model, attention_type="gqa", num_kv_heads=4)
+    config.save_pretrained(tmp_path)
+    torch.save(model.state_dict(), tmp_path / "gt_mha_state_dict.pt")
+    (tmp_path / "bert_gt_mha_manifest.json").write_text(
+        json.dumps({"attention_type": "gqa", "num_kv_heads": 4}),
+        encoding="utf-8",
+    )
+
+    loaded, audit = load_bert_masked_lm(str(tmp_path))
+    assert len(audit) == 1
+    assert isinstance(loaded.bert.encoder.layer[0].attention.self, BertGqaSelfAttention)
+    expected = model.bert.encoder.layer[0].attention.self.key.weight
+    actual = loaded.bert.encoder.layer[0].attention.self.key.weight
     assert torch.equal(actual, expected)
 
 

@@ -9,10 +9,138 @@ import torch
 from torch import nn
 
 from lgma.attention import LieGeneratedMetricAttention, _negative_large
+from lgma.baselines import GroupedQueryAttention
 from lgma.transformer import validate_paper_gt_mha_module
 
-BertAttentionType = Literal["mha", "gt_mha_exact", "gt_mha_residual", "gt_mha_quadratic"]
+BertAttentionType = Literal["mha", "gqa", "gt_mha_exact", "gt_mha_residual", "gt_mha_quadratic"]
 GT_MHA_BERT_ATTENTION_TYPES = {"gt_mha_exact", "gt_mha_residual", "gt_mha_quadratic"}
+BERT_ATTENTION_TYPES = {"mha", "gqa", *GT_MHA_BERT_ATTENTION_TYPES}
+
+
+@dataclass(frozen=True)
+class BertGqaConfig:
+    hidden_size: int
+    num_attention_heads: int
+    num_kv_heads: int = 4
+    attention_probs_dropout_prob: float = 0.1
+    initializer_range: float = 0.02
+    attention_bias: bool = True
+
+    def __post_init__(self) -> None:
+        if self.hidden_size <= 0 or self.num_attention_heads <= 0 or self.num_kv_heads <= 0:
+            raise ValueError("hidden_size, num_attention_heads, and num_kv_heads must be positive")
+        if self.initializer_range <= 0:
+            raise ValueError("initializer_range must be positive")
+        if self.hidden_size % self.num_attention_heads:
+            raise ValueError("hidden_size must be divisible by num_attention_heads")
+        if self.num_attention_heads % self.num_kv_heads:
+            raise ValueError("num_attention_heads must be divisible by num_kv_heads")
+
+
+class BertGqaSelfAttention(nn.Module):
+    """Drop-in ``BertSelfAttention`` using conventional grouped-query attention."""
+
+    def __init__(self, config: BertGqaConfig) -> None:
+        super().__init__()
+        self.gqa_config = config
+        self.hidden_size = config.hidden_size
+        self.num_attention_heads = config.num_attention_heads
+        self.attention_head_size = config.hidden_size // config.num_attention_heads
+        self.all_head_size = config.hidden_size
+        self.gqa_attention = GroupedQueryAttention(
+            d_model=config.hidden_size,
+            num_heads=config.num_attention_heads,
+            head_dim=self.attention_head_size,
+            num_kv_heads=config.num_kv_heads,
+            dropout=config.attention_probs_dropout_prob,
+            bias=config.attention_bias,
+            causal=False,
+        )
+        self.gqa_attention.out_proj = nn.Identity()
+        for projection in (self.query, self.key, self.value):
+            nn.init.normal_(projection.weight, mean=0.0, std=config.initializer_range)
+            if projection.bias is not None:
+                nn.init.zeros_(projection.bias)
+
+    @property
+    def query(self) -> nn.Linear:
+        return self.gqa_attention.q_proj
+
+    @property
+    def key(self) -> nn.Linear:
+        return self.gqa_attention.k_proj
+
+    @property
+    def value(self) -> nn.Linear:
+        return self.gqa_attention.v_proj
+
+    def _mask(self, mask: torch.Tensor | None, hidden: torch.Tensor) -> torch.Tensor | None:
+        if mask is None:
+            return None
+        mask = mask.to(hidden.device)
+        if mask.ndim == 2:
+            if mask.dtype == torch.bool or not mask.is_floating_point():
+                additive = torch.zeros_like(mask, dtype=hidden.dtype).masked_fill(
+                    ~mask.bool(), _negative_large(hidden.dtype)
+                )
+                return additive[:, None, None, :]
+            if mask.numel() == 0 or (mask.min() >= 0 and mask.max() <= 1):
+                return ((1 - mask.to(hidden.dtype)) * _negative_large(hidden.dtype))[
+                    :, None, None, :
+                ]
+        return mask.to(dtype=hidden.dtype)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        head_mask: torch.Tensor | None = None,
+        encoder_hidden_states: torch.Tensor | None = None,
+        encoder_attention_mask: torch.Tensor | None = None,
+        past_key_value: Any | None = None,
+        output_attentions: bool = False,
+        **_: Any,
+    ) -> tuple[torch.Tensor, ...]:
+        if encoder_hidden_states is not None or encoder_attention_mask is not None:
+            raise ValueError("BertGqaSelfAttention supports encoder self-attention only")
+        if past_key_value is not None:
+            raise ValueError("BertGqaSelfAttention does not support decoder KV caching")
+        if hidden_states.ndim != 3:
+            raise ValueError("hidden_states must have shape [batch, sequence, hidden]")
+        additive_mask = self._mask(attention_mask, hidden_states)
+        if head_mask is None:
+            result = self.gqa_attention(
+                hidden_states, attn_mask=additive_mask, need_weights=output_attentions
+            )
+            if output_attentions:
+                context, probabilities = result
+                return context, probabilities
+            return (result,)
+
+        batch, sequence, _ = hidden_states.shape
+        q = self.query(hidden_states).view(
+            batch, sequence, self.num_attention_heads, self.attention_head_size
+        ).transpose(1, 2)
+        k = self.key(hidden_states).view(
+            batch, sequence, self.gqa_config.num_kv_heads, self.attention_head_size
+        ).transpose(1, 2)
+        v = self.value(hidden_states).view(
+            batch, sequence, self.gqa_config.num_kv_heads, self.attention_head_size
+        ).transpose(1, 2)
+        repeat = self.num_attention_heads // self.gqa_config.num_kv_heads
+        k = k.repeat_interleave(repeat, dim=1)
+        v = v.repeat_interleave(repeat, dim=1)
+        scores = torch.einsum("bhtd,bhsd->bhts", q, k) / self.attention_head_size**0.5
+        if additive_mask is not None:
+            scores = scores + additive_mask
+        probabilities = torch.softmax(scores.float(), dim=-1).to(scores.dtype)
+        probabilities = self.gqa_attention.attn_dropout(probabilities)
+        probabilities = probabilities * head_mask.to(
+            device=probabilities.device, dtype=probabilities.dtype
+        )
+        context = torch.einsum("bhts,bhsd->bhtd", probabilities, v)
+        context = context.transpose(1, 2).contiguous().view(batch, sequence, self.all_head_size)
+        return (context, probabilities) if output_attentions else (context,)
 
 
 @dataclass(frozen=True)
@@ -210,6 +338,32 @@ def initialize_gt_mha_from_bert_attention(
                 )
 
 
+def initialize_gqa_from_bert_attention(
+    student: BertGqaSelfAttention, teacher: nn.Module
+) -> None:
+    """Copy query heads and average teacher key/value heads into KV groups."""
+    for name in ("query", "key", "value"):
+        if not isinstance(getattr(teacher, name, None), nn.Linear):
+            raise ValueError(f"teacher attention must expose a linear {name} projection")
+    with torch.no_grad():
+        student.query.weight.copy_(teacher.query.weight.detach())
+        if student.query.bias is not None:
+            student.query.bias.zero_() if teacher.query.bias is None else student.query.bias.copy_(
+                teacher.query.bias.detach()
+            )
+        for name in ("key", "value"):
+            source, target = getattr(teacher, name), getattr(student, name)
+            kwargs = {
+                "source_heads": student.num_attention_heads,
+                "target_heads": student.gqa_config.num_kv_heads,
+            }
+            target.weight.copy_(_average_attention_heads(source.weight.detach(), **kwargs))
+            if target.bias is not None:
+                target.bias.zero_() if source.bias is None else target.bias.copy_(
+                    _average_attention_heads(source.bias.detach(), **kwargs)
+                )
+
+
 def _bert_encoder_layers(model: nn.Module) -> nn.ModuleList:
     for backbone in (getattr(model, "bert", None), getattr(model, "base_model", None), model):
         layers = getattr(getattr(backbone, "encoder", None), "layer", None)
@@ -246,6 +400,7 @@ def replace_bert_self_attention(
     model: nn.Module,
     *,
     attention_type: BertAttentionType,
+    num_kv_heads: int = 4,
     num_base_heads: int = 4,
     num_generators: int = 8,
     generator_mixing: str = "softmax",
@@ -257,19 +412,31 @@ def replace_bert_self_attention(
 ) -> list[dict[str, Any]]:
     if attention_type == "mha":
         return []
-    if attention_type not in GT_MHA_BERT_ATTENTION_TYPES:
+    if attention_type not in BERT_ATTENTION_TYPES:
         raise ValueError(f"unsupported BERT attention type: {attention_type}")
-    if enforce_paper_gt_mha and (num_base_heads != 4 or num_generators != 8):
+    if attention_type in GT_MHA_BERT_ATTENTION_TYPES and enforce_paper_gt_mha and (
+        num_base_heads != 4 or num_generators != 8
+    ):
         raise ValueError("paper GT-MHA requires num_base_heads=4 and num_generators=8")
     config = getattr(model, "config", None)
     if config is None or bool(getattr(config, "is_decoder", False)):
-        raise ValueError("GT-MHA requires an encoder-only BERT config")
+        raise ValueError("attention replacement requires an encoder-only BERT config")
     audit = []
     for index, layer in enumerate(_bert_encoder_layers(model)):
         teacher = layer.attention.self
         teacher_params = sum(p.numel() for p in teacher.parameters())
-        replacement = BertGtMhaSelfAttention(
-            BertGtMhaConfig(
+        if attention_type == "gqa":
+            replacement: nn.Module = BertGqaSelfAttention(
+                BertGqaConfig(
+                    hidden_size=int(config.hidden_size),
+                    num_attention_heads=int(config.num_attention_heads),
+                    num_kv_heads=num_kv_heads,
+                    attention_probs_dropout_prob=float(config.attention_probs_dropout_prob),
+                    initializer_range=float(getattr(config, "initializer_range", 0.02)),
+                )
+            )
+        else:
+            replacement = BertGtMhaSelfAttention(BertGtMhaConfig(
                 hidden_size=int(config.hidden_size),
                 num_attention_heads=int(config.num_attention_heads),
                 attention_probs_dropout_prob=float(config.attention_probs_dropout_prob),
@@ -281,28 +448,35 @@ def replace_bert_self_attention(
                 use_sdpa=use_sdpa,
                 fuse_base_qkv=fuse_base_qkv,
                 sdpa_gqa_mode=sdpa_gqa_mode,
-            )
-        )
-        if enforce_paper_gt_mha:
+            ))
+        if attention_type in GT_MHA_BERT_ATTENTION_TYPES and enforce_paper_gt_mha:
+            assert isinstance(replacement, BertGtMhaSelfAttention)
             validate_paper_gt_mha_module(replacement.gt_attention)
         parameter = next(teacher.parameters())
         replacement.to(device=parameter.device, dtype=parameter.dtype)
         if initialize_from_mha:
-            initialize_gt_mha_from_bert_attention(replacement, teacher)
+            if isinstance(replacement, BertGqaSelfAttention):
+                initialize_gqa_from_bert_attention(replacement, teacher)
+            else:
+                initialize_gt_mha_from_bert_attention(replacement, teacher)
         replacement.train(teacher.training)
         layer.attention.self = replacement
         student_params = sum(p.numel() for p in replacement.parameters())
-        audit.append(
-            {
+        entry = {
                 "layer": index,
                 "attention_type": attention_type,
                 "initialization": "mean_teacher_heads" if initialize_from_mha else "random",
                 "teacher_attention_parameters": teacher_params,
-                "gt_mha_attention_parameters": student_params,
+                "replacement_attention_parameters": student_params,
                 "attention_parameter_reduction": teacher_params - student_params,
-                "gt_mha_config": asdict(replacement.gt_mha_config),
-            }
-        )
+        }
+        if isinstance(replacement, BertGqaSelfAttention):
+            entry["gqa_attention_parameters"] = student_params
+            entry["gqa_config"] = asdict(replacement.gqa_config)
+        else:
+            entry["gt_mha_attention_parameters"] = student_params
+            entry["gt_mha_config"] = asdict(replacement.gt_mha_config)
+        audit.append(entry)
     return audit
 
 
@@ -311,6 +485,7 @@ def load_bert_masked_lm(
     *,
     attention_type: BertAttentionType | None = None,
     initialization: Literal["checkpoint", "random"] = "checkpoint",
+    num_kv_heads: int = 4,
     num_base_heads: int = 4,
     num_generators: int = 8,
     generator_mixing: str = "softmax",
@@ -332,19 +507,22 @@ def load_bert_masked_lm(
         if attention_type is not None and attention_type != saved_type:
             raise ValueError(f"requested {attention_type!r}, saved model uses {saved_type!r}")
         attention_type = saved_type
-        num_base_heads, num_generators = manifest["num_base_heads"], manifest["num_generators"]
+        num_kv_heads = int(manifest.get("num_kv_heads", num_kv_heads))
+        num_base_heads = int(manifest.get("num_base_heads", num_base_heads))
+        num_generators = int(manifest.get("num_generators", num_generators))
         generator_mixing = manifest.get("generator_mixing", "softmax")
         use_sdpa = bool(manifest.get("use_sdpa", use_sdpa))
         fuse_base_qkv = bool(manifest.get("fuse_base_qkv", fuse_base_qkv))
         sdpa_gqa_mode = manifest.get("sdpa_gqa_mode", sdpa_gqa_mode)
     attention_type = attention_type or "mha"
-    if manifest and attention_type in GT_MHA_BERT_ATTENTION_TYPES:
+    if manifest and attention_type != "mha":
         if not state_path.is_file():
-            raise FileNotFoundError(f"GT-MHA state file is missing: {state_path}")
+            raise FileNotFoundError(f"attention state file is missing: {state_path}")
         config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
         model = AutoModelForMaskedLM.from_config(config, trust_remote_code=trust_remote_code)
         audit = replace_bert_self_attention(
-            model, attention_type=attention_type, num_base_heads=int(num_base_heads),
+            model, attention_type=attention_type, num_kv_heads=num_kv_heads,
+            num_base_heads=int(num_base_heads),
             num_generators=int(num_generators), generator_mixing=generator_mixing,
             use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
             sdpa_gqa_mode=sdpa_gqa_mode,
@@ -365,7 +543,8 @@ def load_bert_masked_lm(
     else:
         raise ValueError("initialization must be 'checkpoint' or 'random'")
     return model, replace_bert_self_attention(
-        model, attention_type=attention_type, num_base_heads=num_base_heads,
+        model, attention_type=attention_type, num_kv_heads=num_kv_heads,
+        num_base_heads=num_base_heads,
         num_generators=num_generators, generator_mixing=generator_mixing,
         use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
         sdpa_gqa_mode=sdpa_gqa_mode,
@@ -379,6 +558,7 @@ def load_bert_sequence_classifier(
     *,
     num_labels: int,
     attention_type: BertAttentionType = "mha",
+    num_kv_heads: int = 4,
     num_base_heads: int = 4,
     num_generators: int = 8,
     generator_mixing: str = "softmax",
@@ -396,7 +576,8 @@ def load_bert_sequence_classifier(
         model_name_or_path, num_labels=num_labels, trust_remote_code=trust_remote_code
     )
     return model, replace_bert_self_attention(
-        model, attention_type=attention_type, num_base_heads=num_base_heads,
+        model, attention_type=attention_type, num_kv_heads=num_kv_heads,
+        num_base_heads=num_base_heads,
         num_generators=num_generators, generator_mixing=generator_mixing,
         use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
         sdpa_gqa_mode=sdpa_gqa_mode,

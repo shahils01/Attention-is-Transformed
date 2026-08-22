@@ -11,7 +11,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from lgma.bert import GT_MHA_BERT_ATTENTION_TYPES, load_bert_sequence_classifier
+from lgma.bert import BERT_ATTENTION_TYPES, load_bert_sequence_classifier
 
 GLUE_COLUMNS = {
     "cola": ("sentence", None), "mnli": ("premise", "hypothesis"),
@@ -23,10 +23,11 @@ GLUE_COLUMNS = {
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("Fine-tune official BERT MHA or converted GT-MHA on GLUE")
+    p = argparse.ArgumentParser("Fine-tune BERT MHA, GQA, or converted GT-MHA on GLUE")
     p.add_argument("--model-name-or-path", default="google-bert/bert-base-uncased")
     p.add_argument("--task", choices=sorted(GLUE_COLUMNS), required=True)
-    p.add_argument("--attention-type", choices=["mha", *sorted(GT_MHA_BERT_ATTENTION_TYPES)], default="mha")
+    p.add_argument("--attention-type", choices=sorted(BERT_ATTENTION_TYPES), default="mha")
+    p.add_argument("--num-kv-heads", type=int, default=4)
     p.add_argument("--num-base-heads", type=int, default=4)
     p.add_argument("--num-generators", type=int, default=8)
     p.add_argument(
@@ -81,7 +82,8 @@ def main() -> None:
     )
     model, audit = load_bert_sequence_classifier(
         args.model_name_or_path, num_labels=num_labels,
-        attention_type=args.attention_type, num_base_heads=args.num_base_heads,
+        attention_type=args.attention_type, num_kv_heads=args.num_kv_heads,
+        num_base_heads=args.num_base_heads,
         num_generators=args.num_generators, generator_mixing=args.generator_mixing,
         use_sdpa=args.use_sdpa, fuse_base_qkv=args.fuse_base_qkv,
         sdpa_gqa_mode=args.sdpa_gqa_mode,
@@ -135,7 +137,8 @@ def main() -> None:
     trainer = Trainer(**trainer_kwargs)
     manifest = {
         "model_name_or_path": args.model_name_or_path, "task": args.task,
-        "attention_type": args.attention_type, "num_base_heads": args.num_base_heads,
+        "attention_type": args.attention_type, "num_kv_heads": args.num_kv_heads,
+        "num_base_heads": args.num_base_heads,
         "num_generators": args.num_generators, "generator_mixing": args.generator_mixing,
         "teacher_student_distillation": False,
         "replacement_audit": audit,

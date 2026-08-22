@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# BERT MLM recovery/from-scratch runner for MHA and GT-MHA. By default this
+# BERT MLM recovery/from-scratch runner for MHA, GQA, and GT-MHA. By default this
 # launches the six-base-head GT-MHA residual experiment from scratch.
 #
 #   sbatch deltaai/train_bert_mlm_gh200x4.slurm
 #   sbatch --export=ALL,ATTENTION_TYPE=mha deltaai/train_bert_mlm_gh200x4.slurm
+#   sbatch --export=ALL,ATTENTION_TYPE=gqa,NUM_KV_HEADS=4 deltaai/train_bert_mlm_gh200x4.slurm
 #
 # Set ENFORCE_PAPER_GT_MHA=true only with the paper configuration of four
 # base heads and eight generators.
@@ -26,6 +27,7 @@ REPO_DIR=/u/sshaik4/Attention-is-Transformed
 VENV_DIR=${PROJECT_DIR}/venvs/lgma-clean
 ATTENTION_TYPE=${ATTENTION_TYPE:-gt_mha_residual}
 INITIALIZATION=${INITIALIZATION:-random}
+NUM_KV_HEADS=${NUM_KV_HEADS:-4}
 NUM_BASE_HEADS=${NUM_BASE_HEADS:-6}
 NUM_GENERATORS=${NUM_GENERATORS:-8}
 SEED=${SEED:-42}
@@ -44,6 +46,9 @@ esac
 case "${ATTENTION_TYPE}" in
   mha)
     ATTENTION_ARGS=(--attention-type mha)
+    ;;
+  gqa)
+    ATTENTION_ARGS=(--attention-type gqa --num-kv-heads "${NUM_KV_HEADS}")
     ;;
   gt_mha_exact)
     ATTENTION_ARGS=(
@@ -70,16 +75,20 @@ case "${ATTENTION_TYPE}" in
     )
     ;;
   *)
-    echo "Unsupported ATTENTION_TYPE=${ATTENTION_TYPE}; use mha, gt_mha_exact, or gt_mha_residual" >&2
+    echo "Unsupported ATTENTION_TYPE=${ATTENTION_TYPE}; use mha, gqa, gt_mha_exact, or gt_mha_residual" >&2
     exit 2
     ;;
 esac
 
 MIXING_SUFFIX=
-if [[ "${ATTENTION_TYPE}" != "mha" && "${GENERATOR_MIXING}" != "softmax" ]]; then
+if [[ "${ATTENTION_TYPE}" == gt_mha_* && "${GENERATOR_MIXING}" != "softmax" ]]; then
   MIXING_SUFFIX=_mix${GENERATOR_MIXING}
 fi
-RUN_NAME=bert_base_${ATTENTION_TYPE}_b${NUM_BASE_HEADS}g${NUM_GENERATORS}h12_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}
+if [[ "${ATTENTION_TYPE}" == "gqa" ]]; then
+  RUN_NAME=bert_base_gqa_kv${NUM_KV_HEADS}h12_${INITIALIZATION}_seed${SEED}
+else
+  RUN_NAME=bert_base_${ATTENTION_TYPE}_b${NUM_BASE_HEADS}g${NUM_GENERATORS}h12_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}
+fi
 OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/${RUN_NAME}
 
 module load python/miniforge3_pytorch/2.12.0

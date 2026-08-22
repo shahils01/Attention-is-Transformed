@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit matched MHA/GT-MHA GLUE runs by changing ATTENTION_TYPE and SEED.
+# Submit matched MHA/GQA/GT-MHA GLUE runs by changing ATTENTION_TYPE and SEED.
 # Example:
 #   sbatch --export=ALL,TASK=mnli,ATTENTION_TYPE=mha,SEED=1 \
 #     deltaai/finetune_bert_glue_gh200x4.slurm
@@ -21,7 +21,8 @@ PROJECT_DIR=/work/hdd/biad/sshaik4
 REPO_DIR=${PROJECT_DIR}/repos/Attention-is-Transformed
 VENV_DIR=${PROJECT_DIR}/venvs/lgma
 TASK=${TASK:?Set a GLUE task such as mnli, qnli, sst2, or cola}
-ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to mha or gt_mha_exact}
+ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to mha, gqa, or gt_mha_exact}
+NUM_KV_HEADS=${NUM_KV_HEADS:-4}
 SEED=${SEED:-42}
 MODEL_NAME=${MODEL_NAME:-google-bert/bert-base-uncased}
 WANDB_PROJECT=${WANDB_PROJECT:-bert-gt-mha-glue}
@@ -29,6 +30,9 @@ WANDB_PROJECT=${WANDB_PROJECT:-bert-gt-mha-glue}
 case "${ATTENTION_TYPE}" in
   mha)
     ATTENTION_ARGS=(--attention-type mha)
+    ;;
+  gqa)
+    ATTENTION_ARGS=(--attention-type gqa --num-kv-heads "${NUM_KV_HEADS}")
     ;;
   gt_mha_exact)
     ATTENTION_ARGS=(
