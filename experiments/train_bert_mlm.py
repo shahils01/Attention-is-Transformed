@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from lgma.bert import BERT_ATTENTION_TYPES, bert_parameter_counts, load_bert_masked_lm
 
 
-HEAD_COORDINATE_PARAMETER_NAMES = {"theta", "value_theta"}
+HEAD_COORDINATE_PARAMETER_NAMES = {"theta", "value_theta", "mixing_vector"}
 
 
 def fixed_validation_mlm_mask(
@@ -125,7 +125,9 @@ def optimizer_parameter_groups(
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("BERT MLM training with MHA, GQA, or paper GT-MHA")
+    p = argparse.ArgumentParser(
+        "BERT MLM training with MHA, MQA, GQA, collaborative MHA, or paper GT-MHA"
+    )
     p.add_argument("--model-name-or-path", default="google-bert/bert-base-uncased")
     p.add_argument("--attention-type", choices=sorted(BERT_ATTENTION_TYPES), default="mha")
     p.add_argument("--initialization", choices=["checkpoint", "random"], default="checkpoint")
@@ -201,6 +203,7 @@ def dependencies() -> tuple[Any, ...]:
 
 def main() -> None:
     args = parse_args()
+    effective_num_kv_heads = 1 if args.attention_type == "mqa" else args.num_kv_heads
     if args.bf16 and args.fp16:
         raise SystemExit("--bf16 and --fp16 are mutually exclusive")
     if not 0.0 < args.mlm_probability < 1.0:
@@ -224,7 +227,7 @@ def main() -> None:
     )
     model, audit = load_bert_masked_lm(
         args.model_name_or_path, attention_type=args.attention_type,
-        initialization=args.initialization, num_kv_heads=args.num_kv_heads,
+        initialization=args.initialization, num_kv_heads=effective_num_kv_heads,
         num_base_heads=args.num_base_heads,
         num_generators=args.num_generators, generator_mixing=args.generator_mixing,
         use_sdpa=args.use_sdpa, fuse_base_qkv=args.fuse_base_qkv,
@@ -317,7 +320,7 @@ def main() -> None:
     trainer = Trainer(**trainer_kwargs)
     manifest = {
         "model_name_or_path": args.model_name_or_path, "initialization": args.initialization,
-        "attention_type": args.attention_type, "num_kv_heads": args.num_kv_heads,
+        "attention_type": args.attention_type, "num_kv_heads": effective_num_kv_heads,
         "num_base_heads": args.num_base_heads,
         "num_generators": args.num_generators, "generator_mixing": args.generator_mixing,
         "use_sdpa": args.use_sdpa, "fuse_base_qkv": args.fuse_base_qkv,

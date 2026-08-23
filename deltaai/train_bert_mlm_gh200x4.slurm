@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BERT MLM recovery/from-scratch runner for MHA, GQA, and GT-MHA. By default this
+# BERT MLM runner for MHA, MQA, GQA, collaborative MHA, and GT-MHA. By default this
 # launches the six-base-head GT-MHA residual experiment from scratch.
 #
 #   sbatch deltaai/train_bert_mlm_gh200x4.slurm
@@ -50,6 +50,12 @@ case "${ATTENTION_TYPE}" in
   gqa)
     ATTENTION_ARGS=(--attention-type gqa --num-kv-heads "${NUM_KV_HEADS}")
     ;;
+  mqa)
+    ATTENTION_ARGS=(--attention-type mqa)
+    ;;
+  collaborative)
+    ATTENTION_ARGS=(--attention-type collaborative)
+    ;;
   gt_mha_exact)
     ATTENTION_ARGS=(
       --attention-type gt_mha_exact
@@ -75,7 +81,7 @@ case "${ATTENTION_TYPE}" in
     )
     ;;
   *)
-    echo "Unsupported ATTENTION_TYPE=${ATTENTION_TYPE}; use mha, gqa, gt_mha_exact, or gt_mha_residual" >&2
+    echo "Unsupported ATTENTION_TYPE=${ATTENTION_TYPE}; use mha, mqa, gqa, collaborative, gt_mha_exact, or gt_mha_residual" >&2
     exit 2
     ;;
 esac
@@ -86,6 +92,10 @@ if [[ "${ATTENTION_TYPE}" == gt_mha_* && "${GENERATOR_MIXING}" != "softmax" ]]; 
 fi
 if [[ "${ATTENTION_TYPE}" == "gqa" ]]; then
   RUN_NAME=bert_base_gqa_kv${NUM_KV_HEADS}h12_${INITIALIZATION}_seed${SEED}
+elif [[ "${ATTENTION_TYPE}" == "mqa" ]]; then
+  RUN_NAME=bert_base_mqa_kv1h12_${INITIALIZATION}_seed${SEED}
+elif [[ "${ATTENTION_TYPE}" == "collaborative" ]]; then
+  RUN_NAME=bert_base_collaborative_h12_${INITIALIZATION}_seed${SEED}
 else
   RUN_NAME=bert_base_${ATTENTION_TYPE}_b${NUM_BASE_HEADS}g${NUM_GENERATORS}h12_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}
 fi

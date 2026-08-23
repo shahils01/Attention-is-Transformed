@@ -23,7 +23,9 @@ GLUE_COLUMNS = {
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("Fine-tune BERT MHA, GQA, or converted GT-MHA on GLUE")
+    p = argparse.ArgumentParser(
+        "Fine-tune BERT attention baselines or converted GT-MHA on GLUE"
+    )
     p.add_argument("--model-name-or-path", default="google-bert/bert-base-uncased")
     p.add_argument("--task", choices=sorted(GLUE_COLUMNS), required=True)
     p.add_argument("--attention-type", choices=sorted(BERT_ATTENTION_TYPES), default="mha")
@@ -69,6 +71,7 @@ def dependencies() -> tuple[Any, ...]:
 
 def main() -> None:
     args = parse_args()
+    effective_num_kv_heads = 1 if args.attention_type == "mqa" else args.num_kv_heads
     if args.bf16 and args.fp16:
         raise SystemExit("--bf16 and --fp16 are mutually exclusive")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -82,7 +85,7 @@ def main() -> None:
     )
     model, audit = load_bert_sequence_classifier(
         args.model_name_or_path, num_labels=num_labels,
-        attention_type=args.attention_type, num_kv_heads=args.num_kv_heads,
+        attention_type=args.attention_type, num_kv_heads=effective_num_kv_heads,
         num_base_heads=args.num_base_heads,
         num_generators=args.num_generators, generator_mixing=args.generator_mixing,
         use_sdpa=args.use_sdpa, fuse_base_qkv=args.fuse_base_qkv,
@@ -137,7 +140,7 @@ def main() -> None:
     trainer = Trainer(**trainer_kwargs)
     manifest = {
         "model_name_or_path": args.model_name_or_path, "task": args.task,
-        "attention_type": args.attention_type, "num_kv_heads": args.num_kv_heads,
+        "attention_type": args.attention_type, "num_kv_heads": effective_num_kv_heads,
         "num_base_heads": args.num_base_heads,
         "num_generators": args.num_generators, "generator_mixing": args.generator_mixing,
         "teacher_student_distillation": False,

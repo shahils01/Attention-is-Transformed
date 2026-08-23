@@ -16,6 +16,8 @@ from train_bert_mlm import (  # noqa: E402
     optimizer_parameter_groups,
 )
 from lgma.bert import (  # noqa: E402
+    BertCollaborativeConfig,
+    BertCollaborativeSelfAttention,
     BertGqaConfig,
     BertGqaSelfAttention,
     BertGtMhaConfig,
@@ -60,6 +62,28 @@ def test_bert_gqa_projections_use_bert_initializer() -> None:
         assert torch.count_nonzero(projection.bias) == 0
 
 
+def test_bert_collaborative_projections_use_bert_initializer_and_identity_mixing() -> None:
+    torch.manual_seed(0)
+    module = BertCollaborativeSelfAttention(
+        BertCollaborativeConfig(
+            hidden_size=768,
+            num_attention_heads=12,
+            initializer_range=0.02,
+        )
+    )
+
+    for projection in (module.query, module.key, module.value):
+        assert abs(float(projection.weight.mean())) < 8e-4
+        assert torch.isclose(
+            projection.weight.std(), torch.tensor(0.02), rtol=0.04, atol=0.0
+        )
+        assert torch.count_nonzero(projection.bias) == 0
+    assert torch.equal(
+        module.collaborative_attention.mixing_vector,
+        torch.ones_like(module.collaborative_attention.mixing_vector),
+    )
+
+
 def test_gqa_optimizer_has_no_head_coordinates() -> None:
     module = BertGqaSelfAttention(
         BertGqaConfig(hidden_size=96, num_attention_heads=12, num_kv_heads=4)
@@ -83,6 +107,30 @@ def test_gqa_optimizer_has_no_head_coordinates() -> None:
     assert parameter_decay[id(module.query.weight)] == 0.01
     assert parameter_decay[id(module.key.weight)] == 0.01
     assert parameter_decay[id(module.value.weight)] == 0.01
+
+
+def test_collaborative_mixing_vector_has_no_weight_decay() -> None:
+    module = BertCollaborativeSelfAttention(
+        BertCollaborativeConfig(hidden_size=96, num_attention_heads=12)
+    )
+
+    def all_parameter_names(model: nn.Module, _forbidden_layer_types):
+        return [name for name, _ in model.named_parameters()]
+
+    groups, coordinate_names = optimizer_parameter_groups(
+        module,
+        weight_decay=0.01,
+        get_parameter_names=all_parameter_names,
+    )
+    parameter_decay = {
+        id(parameter): group["weight_decay"]
+        for group in groups
+        for parameter in group["params"]
+    }
+
+    assert coordinate_names == ["collaborative_attention.mixing_vector"]
+    assert parameter_decay[id(module.collaborative_attention.mixing_vector)] == 0.0
+    assert parameter_decay[id(module.query.weight)] == 0.01
 
 
 def test_fixed_validation_mask_is_repeatable_and_preserves_special_tokens() -> None:

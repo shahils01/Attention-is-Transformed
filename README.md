@@ -257,7 +257,10 @@ pip install -e '.[bert,tracking]'
 `experiments/train_bert_mlm.py` uses one Hugging Face BERT training path for
 all attention baselines. `mha` leaves the official checkpoint's attention untouched.
 `gqa` keeps all 12 query heads while sharing key/value projections across four
-KV heads by default. This conventional GQA baseline is distinct from GT-MHA's
+KV heads by default, while `mqa` shares one key/value head across all queries.
+`collaborative` uses shared Q/K projections, a learned diagonal mixing vector
+for each of the 12 attention heads, and independent per-head values. These
+conventional baselines are distinct from GT-MHA's
 `--sdpa-gqa-mode`, which only selects an internal execution path.
 `gt_mha_exact` replaces only `bert.encoder.layer[*].attention.self`; the
 checkpoint-initialized embeddings, feed-forward blocks, output projections,
@@ -298,22 +301,37 @@ python experiments/train_bert_mlm.py \
 python experiments/train_bert_mlm.py \
   --model-name-or-path google-bert/bert-base-uncased \
   --initialization random \
+  --attention-type mqa \
+  --output-dir outputs/bert-base-mqa-scratch
+
+python experiments/train_bert_mlm.py \
+  --model-name-or-path google-bert/bert-base-uncased \
+  --initialization random \
+  --attention-type collaborative \
+  --output-dir outputs/bert-base-collaborative-scratch
+
+python experiments/train_bert_mlm.py \
+  --model-name-or-path google-bert/bert-base-uncased \
+  --initialization random \
   --attention-type gt_mha_exact \
   --output-dir outputs/bert-base-gt-mha-scratch
 ```
 
 For checkpoint conversion, GQA copies BERT's query projection exactly and
 averages contiguous groups of key/value heads. Random GQA initialization uses
-BERT's configured normal initializer. `--num-kv-heads` must divide 12; setting
-it to 1 runs the multi-query-attention (MQA) special case.
+BERT's configured normal initializer. `--num-kv-heads` must divide 12. The
+explicit `mqa` type fixes this value at one. Collaborative checkpoint conversion
+averages Q/K heads into shared projections, copies BERT's full value projection,
+and initializes each diagonal mixing vector to identity.
 
 GT-MHA base Q/K/V projections use BERT's configured normal initializer rather
 than the generic module's fan-out-dependent Xavier initializer. Training keeps
 dynamic 80/10/10 MLM masking, while validation is pre-masked once with the
 model-independent `--validation-mask-seed` (default `17029`) so every attention
 variant is evaluated on identical masked tokens. The GT-MHA head-coordinate
-parameters `theta` and `value_theta` are placed in the optimizer's zero-weight-
-decay group; the generator matrices retain ordinary weight decay. Because this
+parameters `theta` and `value_theta`, plus collaborative MHA's `mixing_vector`,
+are placed in the optimizer's zero-weight-decay group; generator matrices retain
+ordinary weight decay. Because this
 changes optimizer parameter groups, start a fresh run instead of resuming a
 checkpoint created by an older version of the BERT runner.
 
@@ -338,13 +356,13 @@ Q/K/V projection and PyTorch SDPA with four native GQA key/value heads. Calls
 that request attention weights or supply a BERT head mask automatically retain
 the explicit reference path.
 
-The DeltaAI launcher accepts the same baseline as
-`ATTENTION_TYPE=gqa,NUM_KV_HEADS=4`.
+The DeltaAI launcher accepts `ATTENTION_TYPE=mqa`,
+`ATTENTION_TYPE=gqa,NUM_KV_HEADS=4`, and `ATTENTION_TYPE=collaborative`.
 
 This runner implements fixed-length masked-language-model training. It does not
 silently add teacher-student distillation or next-sentence prediction. The
-DeltaAI launcher `deltaai/train_bert_mlm_gh200x4.slurm` supports `mha` and
-`gt_mha_exact` with identical optimization settings.
+DeltaAI launcher `deltaai/train_bert_mlm_gh200x4.slurm` supports all of these
+attention types with identical optimization settings.
 
 Fine-tune the official MHA checkpoint or its direct GT-MHA conversion on any
 GLUE task with the same runner and hyperparameters:
