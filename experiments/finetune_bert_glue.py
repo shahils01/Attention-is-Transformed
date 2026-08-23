@@ -11,7 +11,11 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from lgma.bert import BERT_ATTENTION_TYPES, load_bert_sequence_classifier
+from lgma.bert import (
+    BERT_ATTENTION_TYPES,
+    bert_optimizer_parameter_groups,
+    load_bert_sequence_classifier,
+)
 
 GLUE_COLUMNS = {
     "cola": ("sentence", None), "mnli": ("premise", "hypothesis"),
@@ -66,9 +70,13 @@ def dependencies() -> tuple[Any, ...]:
         import evaluate
         from datasets import load_dataset
         from transformers import AutoTokenizer, DataCollatorWithPadding, set_seed, Trainer, TrainingArguments
+        from transformers.trainer_pt_utils import get_parameter_names
     except ImportError as exc:
         raise SystemExit("Install with: pip install -e '.[bert,tracking]'") from exc
-    return evaluate, load_dataset, AutoTokenizer, DataCollatorWithPadding, set_seed, Trainer, TrainingArguments
+    return (
+        evaluate, load_dataset, AutoTokenizer, DataCollatorWithPadding,
+        get_parameter_names, set_seed, Trainer, TrainingArguments,
+    )
 
 
 def main() -> None:
@@ -77,7 +85,10 @@ def main() -> None:
     if args.bf16 and args.fp16:
         raise SystemExit("--bf16 and --fp16 are mutually exclusive")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    evaluate, load_dataset, AutoTokenizer, Collator, set_seed, Trainer, TrainingArguments = dependencies()
+    (
+        evaluate, load_dataset, AutoTokenizer, Collator, get_parameter_names,
+        set_seed, Trainer, TrainingArguments,
+    ) = dependencies()
     set_seed(args.seed)
     raw = load_dataset("glue", args.task)
     regression = args.task == "stsb"
@@ -132,11 +143,19 @@ def main() -> None:
     key = "eval_strategy" if "eval_strategy" in inspect.signature(TrainingArguments.__init__).parameters else "evaluation_strategy"
     kwargs[key] = "epoch"
     training_args = TrainingArguments(**kwargs)
+    optimizer_groups, coordinate_names = bert_optimizer_parameter_groups(
+        model,
+        weight_decay=args.weight_decay,
+        get_parameter_names=get_parameter_names,
+    )
+    optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(training_args)
+    optimizer = optimizer_cls(optimizer_groups, **optimizer_kwargs)
     validation = "validation_matched" if args.task == "mnli" else "validation"
     trainer_kwargs = {
         "model": model, "args": training_args, "train_dataset": tokenized["train"],
         "eval_dataset": tokenized[validation], "data_collator": Collator(tokenizer),
         "compute_metrics": compute_metrics,
+        "optimizers": (optimizer, None),
     }
     token_key = "processing_class" if "processing_class" in inspect.signature(Trainer.__init__).parameters else "tokenizer"
     trainer_kwargs[token_key] = tokenizer
@@ -149,6 +168,8 @@ def main() -> None:
         "qk_base_dim": args.gt_qk_base_dim,
         "value_head_dim": args.gt_value_head_dim,
         "generator_mixing": args.generator_mixing,
+        "head_coordinate_weight_decay": 0.0,
+        "head_coordinate_parameters": coordinate_names,
         "teacher_student_distillation": False,
         "replacement_audit": audit,
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},

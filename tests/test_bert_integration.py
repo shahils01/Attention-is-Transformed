@@ -633,6 +633,85 @@ def test_saved_additional_baseline_checkpoint_round_trip(
         assert torch.equal(actual, expected)
 
 
+@pytest.mark.parametrize(
+    ("attention_type", "replacement_kwargs", "manifest_kwargs"),
+    [
+        (
+            "gt_mha_residual",
+            {
+                "num_base_heads": 6,
+                "num_generators": 8,
+                "qk_base_dim": 14,
+                "value_head_dim": 8,
+                "initialize_from_mha": False,
+                "enforce_paper_gt_mha": False,
+            },
+            {
+                "num_base_heads": 6,
+                "num_generators": 8,
+                "qk_base_dim": 14,
+                "value_head_dim": 8,
+                "enforce_paper_gt_mha": False,
+            },
+        ),
+        ("gqa", {"num_kv_heads": 4}, {"num_kv_heads": 4}),
+        ("mqa", {}, {"num_kv_heads": 1}),
+        ("collaborative", {}, {}),
+    ],
+)
+def test_custom_mlm_checkpoint_initializes_sequence_classifier_backbone(
+    tmp_path,
+    attention_type: str,
+    replacement_kwargs: dict,
+    manifest_kwargs: dict,
+) -> None:
+    transformers = pytest.importorskip("transformers")
+    config = transformers.BertConfig(
+        vocab_size=101,
+        hidden_size=96,
+        num_hidden_layers=1,
+        num_attention_heads=12,
+        intermediate_size=192,
+    )
+    masked_lm = transformers.BertForMaskedLM(config)
+    replace_bert_self_attention(
+        masked_lm,
+        attention_type=attention_type,
+        **replacement_kwargs,
+    )
+    with torch.no_grad():
+        masked_lm.bert.embeddings.word_embeddings.weight.fill_(0.125)
+    config.save_pretrained(tmp_path)
+    torch.save(masked_lm.state_dict(), tmp_path / "gt_mha_state_dict.pt")
+    (tmp_path / "bert_gt_mha_manifest.json").write_text(
+        json.dumps(
+            {
+                "attention_type": attention_type,
+                **manifest_kwargs,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    classifier, audit = load_bert_sequence_classifier(
+        str(tmp_path),
+        num_labels=3,
+        attention_type=attention_type,
+    )
+
+    assert len(audit) == 1
+    assert classifier.classifier.out_features == 3
+    assert torch.equal(
+        classifier.bert.embeddings.word_embeddings.weight,
+        masked_lm.bert.embeddings.word_embeddings.weight,
+    )
+    expected_encoder = masked_lm.bert.encoder.state_dict()
+    actual_encoder = classifier.bert.encoder.state_dict()
+    assert expected_encoder.keys() == actual_encoder.keys()
+    for name in expected_encoder:
+        assert torch.equal(actual_encoder[name], expected_encoder[name]), name
+
+
 def test_local_sequence_classifier_checkpoint_converts_to_gt_mha(tmp_path) -> None:
     transformers = pytest.importorskip("transformers")
     config = transformers.BertConfig(

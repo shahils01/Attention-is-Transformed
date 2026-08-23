@@ -18,6 +18,47 @@ BertAttentionType = Literal[
 ]
 GT_MHA_BERT_ATTENTION_TYPES = {"gt_mha_exact", "gt_mha_residual", "gt_mha_quadratic"}
 BERT_ATTENTION_TYPES = {"mha", "mqa", "gqa", "collaborative", *GT_MHA_BERT_ATTENTION_TYPES}
+HEAD_COORDINATE_PARAMETER_NAMES = {"theta", "value_theta", "mixing_vector"}
+
+
+def is_head_coordinate_parameter(name: str) -> bool:
+    return name.rsplit(".", 1)[-1] in HEAD_COORDINATE_PARAMETER_NAMES
+
+
+def bert_optimizer_parameter_groups(
+    model: nn.Module,
+    *,
+    weight_decay: float,
+    get_parameter_names: Any,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Build Hugging Face optimizer groups without decaying head coordinates."""
+    decay_names = set(get_parameter_names(model, [nn.LayerNorm]))
+    decay_names = {name for name in decay_names if "bias" not in name}
+    coordinate_names = sorted(
+        name
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad and is_head_coordinate_parameter(name)
+    )
+    decay_names.difference_update(coordinate_names)
+    groups = [
+        {
+            "params": [
+                parameter
+                for name, parameter in model.named_parameters()
+                if parameter.requires_grad and name in decay_names
+            ],
+            "weight_decay": weight_decay,
+        },
+        {
+            "params": [
+                parameter
+                for name, parameter in model.named_parameters()
+                if parameter.requires_grad and name not in decay_names
+            ],
+            "weight_decay": 0.0,
+        },
+    ]
+    return groups, coordinate_names
 
 
 @dataclass(frozen=True)
@@ -714,6 +755,9 @@ def load_bert_masked_lm(
         use_sdpa = bool(manifest.get("use_sdpa", use_sdpa))
         fuse_base_qkv = bool(manifest.get("fuse_base_qkv", fuse_base_qkv))
         sdpa_gqa_mode = manifest.get("sdpa_gqa_mode", sdpa_gqa_mode)
+        enforce_paper_gt_mha = bool(
+            manifest.get("enforce_paper_gt_mha", enforce_paper_gt_mha)
+        )
     attention_type = attention_type or "mha"
     if manifest and attention_type != "mha":
         if not state_path.is_file():
@@ -773,9 +817,77 @@ def load_bert_sequence_classifier(
     trust_remote_code: bool = False,
 ) -> tuple[nn.Module, list[dict[str, Any]]]:
     try:
-        from transformers import AutoModelForSequenceClassification
+        from transformers import AutoConfig, AutoModelForSequenceClassification
     except ImportError as exc:
         raise ImportError("install BERT dependencies with `pip install -e '.[bert]'`") from exc
+    path = Path(model_name_or_path)
+    manifest_path = path / "bert_gt_mha_manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else None
+    if manifest and manifest["attention_type"] != "mha":
+        saved_type = manifest["attention_type"]
+        if attention_type != saved_type:
+            raise ValueError(f"requested {attention_type!r}, saved model uses {saved_type!r}")
+        num_kv_heads = int(manifest.get("num_kv_heads", num_kv_heads))
+        num_base_heads = int(manifest.get("num_base_heads", num_base_heads))
+        num_generators = int(manifest.get("num_generators", num_generators))
+        qk_base_dim = manifest.get("qk_base_dim", qk_base_dim)
+        value_head_dim = manifest.get("value_head_dim", value_head_dim)
+        generator_mixing = manifest.get("generator_mixing", generator_mixing)
+        use_sdpa = bool(manifest.get("use_sdpa", use_sdpa))
+        fuse_base_qkv = bool(manifest.get("fuse_base_qkv", fuse_base_qkv))
+        sdpa_gqa_mode = manifest.get("sdpa_gqa_mode", sdpa_gqa_mode)
+        enforce_paper_gt_mha = bool(
+            manifest.get("enforce_paper_gt_mha", enforce_paper_gt_mha)
+        )
+        masked_lm, _ = load_bert_masked_lm(
+            model_name_or_path,
+            attention_type=saved_type,
+            num_kv_heads=num_kv_heads,
+            num_base_heads=num_base_heads,
+            num_generators=num_generators,
+            qk_base_dim=qk_base_dim,
+            value_head_dim=value_head_dim,
+            generator_mixing=generator_mixing,
+            use_sdpa=use_sdpa,
+            fuse_base_qkv=fuse_base_qkv,
+            sdpa_gqa_mode=sdpa_gqa_mode,
+            enforce_paper_gt_mha=enforce_paper_gt_mha,
+            trust_remote_code=trust_remote_code,
+        )
+        config = AutoConfig.from_pretrained(
+            model_name_or_path,
+            num_labels=num_labels,
+            trust_remote_code=trust_remote_code,
+        )
+        model = AutoModelForSequenceClassification.from_config(
+            config, trust_remote_code=trust_remote_code
+        )
+        audit = replace_bert_self_attention(
+            model,
+            attention_type=saved_type,
+            num_kv_heads=num_kv_heads,
+            num_base_heads=num_base_heads,
+            num_generators=num_generators,
+            qk_base_dim=qk_base_dim,
+            value_head_dim=value_head_dim,
+            generator_mixing=generator_mixing,
+            use_sdpa=use_sdpa,
+            fuse_base_qkv=fuse_base_qkv,
+            sdpa_gqa_mode=sdpa_gqa_mode,
+            initialize_from_mha=False,
+            enforce_paper_gt_mha=enforce_paper_gt_mha,
+        )
+        source_backbone = getattr(masked_lm, "bert", None)
+        target_backbone = getattr(model, "bert", None)
+        if source_backbone is None or target_backbone is None:
+            raise ValueError("expected BERT MLM and sequence-classification backbones")
+        target_backbone.embeddings.load_state_dict(
+            source_backbone.embeddings.state_dict(), strict=True
+        )
+        target_backbone.encoder.load_state_dict(
+            source_backbone.encoder.state_dict(), strict=True
+        )
+        return model, audit
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name_or_path, num_labels=num_labels, trust_remote_code=trust_remote_code
     )

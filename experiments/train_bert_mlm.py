@@ -8,14 +8,15 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from torch import nn
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from lgma.bert import BERT_ATTENTION_TYPES, bert_parameter_counts, load_bert_masked_lm
-
-
-HEAD_COORDINATE_PARAMETER_NAMES = {"theta", "value_theta", "mixing_vector"}
+from lgma.bert import (
+    BERT_ATTENTION_TYPES,
+    bert_optimizer_parameter_groups as optimizer_parameter_groups,
+    bert_parameter_counts,
+    load_bert_masked_lm,
+)
 
 
 def fixed_validation_mlm_mask(
@@ -82,46 +83,6 @@ class TrainEvalMLMCollator:
             raise ValueError("cannot collate a mixture of dynamic and fixed MLM examples")
         collator = self.fixed_collator if all(fixed) else self.train_collator
         return collator(features)
-
-
-def is_head_coordinate_parameter(name: str) -> bool:
-    return name.rsplit(".", 1)[-1] in HEAD_COORDINATE_PARAMETER_NAMES
-
-
-def optimizer_parameter_groups(
-    model: nn.Module,
-    *,
-    weight_decay: float,
-    get_parameter_names: Any,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """Build Hugging Face-style groups with no decay on GT-MHA coordinates."""
-    decay_names = set(get_parameter_names(model, [nn.LayerNorm]))
-    decay_names = {name for name in decay_names if "bias" not in name}
-    coordinate_names = sorted(
-        name
-        for name, parameter in model.named_parameters()
-        if parameter.requires_grad and is_head_coordinate_parameter(name)
-    )
-    decay_names.difference_update(coordinate_names)
-    groups = [
-        {
-            "params": [
-                parameter
-                for name, parameter in model.named_parameters()
-                if parameter.requires_grad and name in decay_names
-            ],
-            "weight_decay": weight_decay,
-        },
-        {
-            "params": [
-                parameter
-                for name, parameter in model.named_parameters()
-                if parameter.requires_grad and name not in decay_names
-            ],
-            "weight_decay": 0.0,
-        },
-    ]
-    return groups, coordinate_names
 
 
 def parse_args() -> argparse.Namespace:

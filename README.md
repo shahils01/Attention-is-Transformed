@@ -384,23 +384,30 @@ silently add teacher-student distillation or next-sentence prediction. The
 DeltaAI launcher `deltaai/train_bert_mlm_gh200x4.slurm` supports all of these
 attention types with identical optimization settings.
 
-Fine-tune the official MHA checkpoint or its direct GT-MHA conversion on any
-GLUE task with the same runner and hyperparameters:
+Fine-tune either an official checkpoint or a completed MLM output directory on
+any GLUE task with the same runner and hyperparameters:
 
 ```bash
 python experiments/finetune_bert_glue.py \
+  --model-name-or-path outputs/bert-base-mha-scratch \
   --task mnli \
   --attention-type mha \
   --output-dir outputs/bert-base-mha-mnli
 
 python experiments/finetune_bert_glue.py \
+  --model-name-or-path outputs/bert-base-gt-mha-scratch \
   --task mnli \
-  --attention-type gt_mha_exact \
+  --attention-type gt_mha_residual \
   --output-dir outputs/bert-base-gt-mha-mnli
 ```
 
-The GLUE path starts both variants from the same official checkpoint and uses
-ordinary supervised task loss. It does not use a teacher or distillation loss.
+For custom GT-MHA, GQA, MQA, and collaborative MLM outputs, the loader first
+reconstructs the saved attention architecture, restores the trained embeddings
+and full encoder, and then initializes only BERT's pooler and the task head.
+Manifest settings automatically restore widened parameter-matched GT-MHA
+dimensions. Fine-tuning uses ordinary supervised task loss and preserves zero
+weight decay for GT head coordinates and collaborative mixing vectors; it does
+not use a teacher or distillation loss.
 Use `deltaai/finetune_bert_glue_gh200x4.slurm` for matched DeltaAI runs; vary
 `TASK`, `ATTENTION_TYPE`, and `SEED` through `sbatch --export`.
 
