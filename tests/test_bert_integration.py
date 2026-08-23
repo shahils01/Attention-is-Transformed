@@ -77,6 +77,39 @@ def test_bert_gt_mha_forward_and_padding_mask() -> None:
     assert torch.allclose(probabilities[1, :, :, 4:], torch.zeros_like(probabilities[1, :, :, 4:]))
 
 
+def test_bert_gt_mha_supports_wider_qk_bases_with_standard_values() -> None:
+    torch.manual_seed(0)
+    module = BertGtMhaSelfAttention(
+        BertGtMhaConfig(
+            hidden_size=96,
+            num_attention_heads=12,
+            num_base_heads=6,
+            num_generators=8,
+            qk_base_dim=14,
+            value_head_dim=8,
+            attention_probs_dropout_prob=0.0,
+            attention_type="gt_mha_residual",
+        )
+    )
+    hidden = torch.randn(2, 5, 96, requires_grad=True)
+    context, probabilities = module(
+        hidden,
+        attention_mask=torch.ones(2, 5),
+        output_attentions=True,
+    )
+    context.square().mean().backward()
+
+    assert module.query.out_features == 6 * 14
+    assert module.key.out_features == 6 * 14
+    assert module.value.out_features == 6 * 8
+    assert context.shape == (2, 5, 96)
+    assert probabilities.shape == (2, 12, 5, 5)
+    assert all(
+        parameter.grad is not None and torch.isfinite(parameter.grad).all()
+        for parameter in module.parameters()
+    )
+
+
 def test_bert_gqa_forward_padding_mask_and_backward() -> None:
     torch.manual_seed(0)
     module = BertGqaSelfAttention(
@@ -217,6 +250,41 @@ def test_teacher_head_averaging_initializes_all_three_base_projections() -> None
     assert torch.equal(student.query.weight, expected_query)
     assert torch.equal(student.key.weight, expected_key)
     assert torch.equal(student.value.weight, expected_value)
+
+
+def test_widened_qk_bases_require_random_initialization() -> None:
+    teacher = FakeBertSelfAttention(96)
+    student = BertGtMhaSelfAttention(
+        BertGtMhaConfig(
+            hidden_size=96,
+            num_attention_heads=12,
+            num_base_heads=6,
+            qk_base_dim=14,
+            value_head_dim=8,
+        )
+    )
+    with pytest.raises(ValueError, match="use random initialization"):
+        initialize_gt_mha_from_bert_attention(student, teacher)
+
+
+def test_parameter_matched_gt_mha_configuration_is_audited() -> None:
+    model = FakeBertModel(num_layers=1)
+    audit = replace_bert_self_attention(
+        model,
+        attention_type="gt_mha_residual",
+        num_base_heads=6,
+        num_generators=8,
+        qk_base_dim=14,
+        value_head_dim=8,
+        initialize_from_mha=False,
+        enforce_paper_gt_mha=False,
+    )
+    replacement = model.bert.encoder.layer[0].attention.self
+    assert isinstance(replacement, BertGtMhaSelfAttention)
+    assert replacement.gt_attention.base_dim == 14
+    assert replacement.gt_attention.value_dim == 8
+    assert audit[0]["gt_mha_config"]["qk_base_dim"] == 14
+    assert audit[0]["gt_mha_config"]["value_head_dim"] == 8
 
 
 def test_gqa_initialization_copies_queries_and_averages_kv_heads() -> None:

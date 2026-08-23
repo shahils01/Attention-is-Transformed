@@ -359,6 +359,26 @@ the explicit reference path.
 The DeltaAI launcher accepts `ATTENTION_TYPE=mqa`,
 `ATTENTION_TYPE=gqa,NUM_KV_HEADS=4`, and `ATTENTION_TYPE=collaborative`.
 
+The parameter-matched residual GT-MHA keeps 12 generated heads and 64-wide
+values while widening six shared Q/K bases to 140 dimensions:
+
+```bash
+python experiments/train_bert_mlm.py \
+  --model-name-or-path google-bert/bert-base-uncased \
+  --initialization random \
+  --attention-type gt_mha_residual \
+  --num-base-heads 6 \
+  --num-generators 8 \
+  --gt-qk-base-dim 140 \
+  --gt-value-head-dim 64 \
+  --no-enforce-paper-gt-mha \
+  --output-dir outputs/bert-base-gt-mha-parameter-matched
+```
+
+This configuration has 109,576,698 parameters versus 109,514,298 for BERT
+MHA. Widened Q/K bases require random initialization rather than conversion
+from an MHA checkpoint.
+
 This runner implements fixed-length masked-language-model training. It does not
 silently add teacher-student distillation or next-sentence prediction. The
 DeltaAI launcher `deltaai/train_bert_mlm_gh200x4.slurm` supports all of these

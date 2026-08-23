@@ -32,6 +32,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-kv-heads", type=int, default=4)
     p.add_argument("--num-base-heads", type=int, default=4)
     p.add_argument("--num-generators", type=int, default=8)
+    p.add_argument("--gt-qk-base-dim", type=int)
+    p.add_argument("--gt-value-head-dim", type=int)
     p.add_argument(
         "--generator-mixing", "--generator_mixing",
         dest="generator_mixing", choices=["softmax", "none"], default="softmax",
@@ -87,7 +89,8 @@ def main() -> None:
         args.model_name_or_path, num_labels=num_labels,
         attention_type=args.attention_type, num_kv_heads=effective_num_kv_heads,
         num_base_heads=args.num_base_heads,
-        num_generators=args.num_generators, generator_mixing=args.generator_mixing,
+        num_generators=args.num_generators, qk_base_dim=args.gt_qk_base_dim,
+        value_head_dim=args.gt_value_head_dim, generator_mixing=args.generator_mixing,
         use_sdpa=args.use_sdpa, fuse_base_qkv=args.fuse_base_qkv,
         sdpa_gqa_mode=args.sdpa_gqa_mode,
         enforce_paper_gt_mha=args.enforce_paper_gt_mha,
@@ -142,7 +145,10 @@ def main() -> None:
         "model_name_or_path": args.model_name_or_path, "task": args.task,
         "attention_type": args.attention_type, "num_kv_heads": effective_num_kv_heads,
         "num_base_heads": args.num_base_heads,
-        "num_generators": args.num_generators, "generator_mixing": args.generator_mixing,
+        "num_generators": args.num_generators,
+        "qk_base_dim": args.gt_qk_base_dim,
+        "value_head_dim": args.gt_value_head_dim,
+        "generator_mixing": args.generator_mixing,
         "teacher_student_distillation": False,
         "replacement_audit": audit,
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},

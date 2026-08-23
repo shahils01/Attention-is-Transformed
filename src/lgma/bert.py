@@ -278,6 +278,8 @@ class BertGtMhaConfig:
     attention_type: str = "gt_mha_exact"
     num_base_heads: int = 4
     num_generators: int = 8
+    qk_base_dim: int | None = None
+    value_head_dim: int | None = None
     generator_type: str = "full"
     generator_mixing: str = "softmax"
     use_sdpa: bool = False
@@ -292,6 +294,18 @@ class BertGtMhaConfig:
             raise ValueError("initializer_range must be positive")
         if self.hidden_size % self.num_attention_heads:
             raise ValueError("hidden_size must be divisible by num_attention_heads")
+        default_head_dim = self.hidden_size // self.num_attention_heads
+        if self.qk_base_dim is None:
+            object.__setattr__(self, "qk_base_dim", default_head_dim)
+        if self.value_head_dim is None:
+            object.__setattr__(self, "value_head_dim", default_head_dim)
+        if self.qk_base_dim <= 0 or self.value_head_dim <= 0:
+            raise ValueError("qk_base_dim and value_head_dim must be positive")
+        if self.num_attention_heads * self.value_head_dim != self.hidden_size:
+            raise ValueError(
+                "num_attention_heads * value_head_dim must equal hidden_size "
+                "while BertSelfOutput owns the output projection"
+            )
         if self.num_attention_heads % self.num_base_heads:
             raise ValueError("num_attention_heads must be divisible by num_base_heads")
         if self.attention_type not in GT_MHA_BERT_ATTENTION_TYPES:
@@ -326,8 +340,8 @@ class BertGtMhaSelfAttention(nn.Module):
             causal=False,
             stabilize_generators=False,
             normalize_generators=False,
-            base_dim=self.attention_head_size,
-            value_dim=self.attention_head_size,
+            base_dim=config.qk_base_dim,
+            value_dim=config.value_head_dim,
             metric_mode=mode,
             theta_init="random_sphere",
             logit_scale_mode="sqrt_dim",
@@ -450,6 +464,13 @@ def initialize_gt_mha_from_bert_attention(
     for name in ("query", "key", "value"):
         if not isinstance(getattr(teacher, name, None), nn.Linear):
             raise ValueError(f"teacher attention must expose a linear {name} projection")
+    source_head_dim = teacher.query.out_features // student.num_attention_heads
+    expected_qk_width = student.gt_mha_config.num_base_heads * source_head_dim
+    if student.query.out_features != expected_qk_width:
+        raise ValueError(
+            "checkpoint initialization requires qk_base_dim to equal the teacher head "
+            "dimension; use random initialization for widened Q/K bases"
+        )
     with torch.no_grad():
         for name in ("query", "key", "value"):
             source, target = getattr(teacher, name), getattr(student, name)
@@ -553,6 +574,8 @@ def replace_bert_self_attention(
     num_kv_heads: int = 4,
     num_base_heads: int = 4,
     num_generators: int = 8,
+    qk_base_dim: int | None = None,
+    value_head_dim: int | None = None,
     generator_mixing: str = "softmax",
     use_sdpa: bool = False,
     fuse_base_qkv: bool = False,
@@ -603,6 +626,8 @@ def replace_bert_self_attention(
                 attention_type=attention_type,
                 num_base_heads=num_base_heads,
                 num_generators=num_generators,
+                qk_base_dim=qk_base_dim,
+                value_head_dim=value_head_dim,
                 generator_mixing=generator_mixing,
                 use_sdpa=use_sdpa,
                 fuse_base_qkv=fuse_base_qkv,
@@ -659,6 +684,8 @@ def load_bert_masked_lm(
     num_kv_heads: int = 4,
     num_base_heads: int = 4,
     num_generators: int = 8,
+    qk_base_dim: int | None = None,
+    value_head_dim: int | None = None,
     generator_mixing: str = "softmax",
     use_sdpa: bool = False,
     fuse_base_qkv: bool = False,
@@ -681,6 +708,8 @@ def load_bert_masked_lm(
         num_kv_heads = int(manifest.get("num_kv_heads", num_kv_heads))
         num_base_heads = int(manifest.get("num_base_heads", num_base_heads))
         num_generators = int(manifest.get("num_generators", num_generators))
+        qk_base_dim = manifest.get("qk_base_dim", qk_base_dim)
+        value_head_dim = manifest.get("value_head_dim", value_head_dim)
         generator_mixing = manifest.get("generator_mixing", "softmax")
         use_sdpa = bool(manifest.get("use_sdpa", use_sdpa))
         fuse_base_qkv = bool(manifest.get("fuse_base_qkv", fuse_base_qkv))
@@ -694,7 +723,8 @@ def load_bert_masked_lm(
         audit = replace_bert_self_attention(
             model, attention_type=attention_type, num_kv_heads=num_kv_heads,
             num_base_heads=int(num_base_heads),
-            num_generators=int(num_generators), generator_mixing=generator_mixing,
+            num_generators=int(num_generators), qk_base_dim=qk_base_dim,
+            value_head_dim=value_head_dim, generator_mixing=generator_mixing,
             use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
             sdpa_gqa_mode=sdpa_gqa_mode,
             initialize_from_mha=False,
@@ -716,7 +746,8 @@ def load_bert_masked_lm(
     return model, replace_bert_self_attention(
         model, attention_type=attention_type, num_kv_heads=num_kv_heads,
         num_base_heads=num_base_heads,
-        num_generators=num_generators, generator_mixing=generator_mixing,
+        num_generators=num_generators, qk_base_dim=qk_base_dim,
+        value_head_dim=value_head_dim, generator_mixing=generator_mixing,
         use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
         sdpa_gqa_mode=sdpa_gqa_mode,
         initialize_from_mha=initialization == "checkpoint",
@@ -732,6 +763,8 @@ def load_bert_sequence_classifier(
     num_kv_heads: int = 4,
     num_base_heads: int = 4,
     num_generators: int = 8,
+    qk_base_dim: int | None = None,
+    value_head_dim: int | None = None,
     generator_mixing: str = "softmax",
     use_sdpa: bool = False,
     fuse_base_qkv: bool = False,
@@ -749,7 +782,8 @@ def load_bert_sequence_classifier(
     return model, replace_bert_self_attention(
         model, attention_type=attention_type, num_kv_heads=num_kv_heads,
         num_base_heads=num_base_heads,
-        num_generators=num_generators, generator_mixing=generator_mixing,
+        num_generators=num_generators, qk_base_dim=qk_base_dim,
+        value_head_dim=value_head_dim, generator_mixing=generator_mixing,
         use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
         sdpa_gqa_mode=sdpa_gqa_mode,
         initialize_from_mha=True,

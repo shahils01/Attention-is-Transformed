@@ -30,6 +30,8 @@ INITIALIZATION=${INITIALIZATION:-random}
 NUM_KV_HEADS=${NUM_KV_HEADS:-4}
 NUM_BASE_HEADS=${NUM_BASE_HEADS:-6}
 NUM_GENERATORS=${NUM_GENERATORS:-8}
+GT_QK_BASE_DIM=${GT_QK_BASE_DIM:-}
+GT_VALUE_HEAD_DIM=${GT_VALUE_HEAD_DIM:-}
 SEED=${SEED:-42}
 MAX_STEPS=${MAX_STEPS:-100000}
 MODEL_NAME=${MODEL_NAME:-google-bert/bert-base-uncased}
@@ -42,6 +44,14 @@ case "${ENFORCE_PAPER_GT_MHA}" in
   false) PAPER_ARGS=(--no-enforce-paper-gt-mha) ;;
   *) echo "ENFORCE_PAPER_GT_MHA must be true or false" >&2; exit 2 ;;
 esac
+
+GT_DIM_ARGS=()
+if [[ -n "${GT_QK_BASE_DIM}" ]]; then
+  GT_DIM_ARGS+=(--gt-qk-base-dim "${GT_QK_BASE_DIM}")
+fi
+if [[ -n "${GT_VALUE_HEAD_DIM}" ]]; then
+  GT_DIM_ARGS+=(--gt-value-head-dim "${GT_VALUE_HEAD_DIM}")
+fi
 
 case "${ATTENTION_TYPE}" in
   mha)
@@ -65,6 +75,7 @@ case "${ATTENTION_TYPE}" in
       --use-sdpa
       --fuse-base-qkv
       --sdpa-gqa-mode native
+      "${GT_DIM_ARGS[@]}"
       "${PAPER_ARGS[@]}"
     )
     ;;
@@ -77,6 +88,7 @@ case "${ATTENTION_TYPE}" in
       --use-sdpa
       --fuse-base-qkv
       --sdpa-gqa-mode native
+      "${GT_DIM_ARGS[@]}"
       "${PAPER_ARGS[@]}"
     )
     ;;
@@ -90,6 +102,10 @@ MIXING_SUFFIX=
 if [[ "${ATTENTION_TYPE}" == gt_mha_* && "${GENERATOR_MIXING}" != "softmax" ]]; then
   MIXING_SUFFIX=_mix${GENERATOR_MIXING}
 fi
+DIM_SUFFIX=
+if [[ -n "${GT_QK_BASE_DIM}" ]]; then
+  DIM_SUFFIX=_qk${GT_QK_BASE_DIM}v${GT_VALUE_HEAD_DIM:-64}
+fi
 if [[ "${ATTENTION_TYPE}" == "gqa" ]]; then
   RUN_NAME=bert_base_gqa_kv${NUM_KV_HEADS}h12_${INITIALIZATION}_seed${SEED}
 elif [[ "${ATTENTION_TYPE}" == "mqa" ]]; then
@@ -97,7 +113,7 @@ elif [[ "${ATTENTION_TYPE}" == "mqa" ]]; then
 elif [[ "${ATTENTION_TYPE}" == "collaborative" ]]; then
   RUN_NAME=bert_base_collaborative_h12_${INITIALIZATION}_seed${SEED}
 else
-  RUN_NAME=bert_base_${ATTENTION_TYPE}_b${NUM_BASE_HEADS}g${NUM_GENERATORS}h12_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}
+  RUN_NAME=bert_base_${ATTENTION_TYPE}_b${NUM_BASE_HEADS}g${NUM_GENERATORS}h12${DIM_SUFFIX}_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}
 fi
 OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/${RUN_NAME}
 
