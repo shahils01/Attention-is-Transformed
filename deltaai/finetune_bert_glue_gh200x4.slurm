@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Submit matched BERT attention baselines by changing ATTENTION_TYPE and SEED.
-# Example:
-#   sbatch --export=ALL,TASK=mnli,ATTENTION_TYPE=mha,SEED=1 \
+# Fine-tune a completed BERT MLM checkpoint on one GLUE task.
+#
+# On sshaik4:
+#   sbatch --export=ALL,TASK=mnli,ATTENTION_TYPE=gt_mha_residual,\
+# CHECKPOINT_DIR=/work/hdd/biad/sshaik4/lgma_runs/<mlm-run>,SEED=42 \
 #     deltaai/finetune_bert_glue_gh200x4.slurm
+#
+# For another account, override the Slurm account/log paths on the sbatch
+# command line and export its PROJECT_DIR, REPO_DIR, and VENV_DIR.
 #SBATCH --job-name=bert-glue
 #SBATCH --account=biad-dtai-gh
 #SBATCH --partition=ghx4
@@ -17,14 +22,14 @@
 
 set -euo pipefail
 
-PROJECT_DIR=/work/hdd/biad/sshaik4
-REPO_DIR=${PROJECT_DIR}/repos/Attention-is-Transformed
-VENV_DIR=${PROJECT_DIR}/venvs/lgma
+PROJECT_DIR=${PROJECT_DIR:-/work/hdd/biad/sshaik4}
+REPO_DIR=${REPO_DIR:-/u/sshaik4/Attention-is-Transformed}
+VENV_DIR=${VENV_DIR:-${PROJECT_DIR}/venvs/lgma-clean}
 TASK=${TASK:?Set a GLUE task such as mnli, qnli, sst2, or cola}
-ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to mha, mqa, gqa, collaborative, or gt_mha_exact}
+ATTENTION_TYPE=${ATTENTION_TYPE:?Set ATTENTION_TYPE to the checkpoint attention type}
 NUM_KV_HEADS=${NUM_KV_HEADS:-4}
 SEED=${SEED:-42}
-MODEL_NAME=${MODEL_NAME:-google-bert/bert-base-uncased}
+CHECKPOINT_DIR=${CHECKPOINT_DIR:?Set CHECKPOINT_DIR to a completed MLM output directory}
 WANDB_PROJECT=${WANDB_PROJECT:-bert-gt-mha-glue}
 
 case "${ATTENTION_TYPE}" in
@@ -40,12 +45,9 @@ case "${ATTENTION_TYPE}" in
   collaborative)
     ATTENTION_ARGS=(--attention-type collaborative)
     ;;
-  gt_mha_exact)
+  gt_mha_exact|gt_mha_residual|gt_mha_quadratic)
     ATTENTION_ARGS=(
-      --attention-type gt_mha_exact
-      --num-base-heads 4
-      --num-generators 8
-      --enforce-paper-gt-mha
+      --attention-type "${ATTENTION_TYPE}"
     )
     ;;
   *)
@@ -54,7 +56,8 @@ case "${ATTENTION_TYPE}" in
     ;;
 esac
 
-RUN_NAME=bert_base_${ATTENTION_TYPE}_glue_${TASK}_seed${SEED}_v1
+CHECKPOINT_NAME=$(basename "${CHECKPOINT_DIR}")
+RUN_NAME=${CHECKPOINT_NAME}_glue_${TASK}_seed${SEED}_v1
 OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/${RUN_NAME}
 
 module load python/miniforge3_pytorch/2.12.0
@@ -74,7 +77,7 @@ cd "${REPO_DIR}"
 export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
 
 torchrun --standalone --nproc_per_node=4 experiments/finetune_bert_glue.py \
-  --model-name-or-path "${MODEL_NAME}" \
+  --model-name-or-path "${CHECKPOINT_DIR}" \
   --task "${TASK}" \
   "${ATTENTION_ARGS[@]}" \
   --max-sequence-length 128 \
