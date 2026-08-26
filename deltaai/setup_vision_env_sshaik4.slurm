@@ -17,10 +17,19 @@
 set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-/u/sshaik4/Attention-is-Transformed-vision}
-VENV_DIR=/work/hdd/biad/sshaik4/venvs/lgma-clean
+VENV_DIR=/work/hdd/biad/sshaik4/venvs/lgma-vision
 
 module load python/miniforge3_pytorch/2.12.0
+if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+  python -m venv --system-site-packages "${VENV_DIR}"
+fi
 source "${VENV_DIR}/bin/activate"
 cd "${REPO_DIR}"
-python -m pip install -e ".[vision,tracking]"
+# Reuse DeltaAI's CUDA 13 PyTorch/torchvision build. Installing the generic
+# torchvision dependency would replace the cluster-optimized Torch wheel.
+python -m pip install --no-deps \
+  timm==1.0.19 \
+  webdataset==1.0.2 \
+  braceexpand==0.1.7
+python -m pip install --no-deps -e .
 python -c 'import timm, torch, webdataset; print(torch.__version__, timm.__version__, webdataset.__version__)'

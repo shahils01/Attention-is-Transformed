@@ -18,7 +18,7 @@
 set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-/u/sshaik4/Attention-is-Transformed-vision}
-VENV_DIR=/work/hdd/biad/sshaik4/venvs/lgma-clean
+VENV_DIR=/work/hdd/biad/sshaik4/venvs/lgma-vision
 DATA_DIR=${DATA_DIR:-/work/nvme/biad/sshaik4/lgma_data/imagenet_wds}
 RUNS_DIR=${RUNS_DIR:-/work/hdd/biad/sshaik4/lgma_runs/imagenet}
 ATTENTION_TYPE=${ATTENTION_TYPE:-gt_mha_residual}

@@ -55,7 +55,10 @@ sbatch deltaai/prepare_imagenet_wds_sshaik4.slurm
 
 On `sshaik4`, these launchers default to the isolated
 `/u/sshaik4/Attention-is-Transformed-vision` worktree so the existing `bert`
-checkout and its untracked files remain untouched.
+checkout and its untracked files remain untouched. Vision dependencies are
+installed in a separate `lgma-vision` environment that inherits DeltaAI's
+CUDA-optimized PyTorch build; the setup job deliberately installs the small
+vision packages with `--no-deps` to prevent replacing that Torch build.
 
 After both jobs pass, first run one short smoke allocation by overriding
 `EPOCHS=1` and then submit the controlled matrix:
