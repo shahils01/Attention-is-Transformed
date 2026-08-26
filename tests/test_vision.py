@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
 import pytest
 import torch
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from lgma.baselines import ReducedDimMultiheadAttention
 from lgma.vision import (
@@ -10,6 +17,16 @@ from lgma.vision import (
     DeiTConfig,
     vision_parameter_counts,
 )
+
+
+def test_webdataset_rejects_repeat_augmentation() -> None:
+    from argparse import Namespace
+
+    from experiments.train_imagenet_deit import create_data_loaders
+
+    args = Namespace(dataset_format="wds", repeated_augmentation=3)
+    with pytest.raises(ValueError, match="requires an indexable dataset"):
+        create_data_loaders(args, world_size=1, device=torch.device("cpu"))
 
 
 def tiny_config(attention_type: str) -> DeiTConfig:

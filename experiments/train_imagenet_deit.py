@@ -56,7 +56,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mixup", type=float, default=0.8)
     parser.add_argument("--cutmix", type=float, default=1.0)
     parser.add_argument("--label-smoothing", type=float, default=0.1)
-    parser.add_argument("--repeated-augmentation", type=int, default=3)
+    parser.add_argument(
+        "--repeated-augmentation",
+        type=int,
+        default=0,
+        help=(
+            "RepeatAugment count for indexable ImageFolder datasets. Keep at 0 "
+            "for iterable WebDataset shards, which timm cannot repeat-sample."
+        ),
+    )
     parser.add_argument("--model-ema-decay", type=float, default=0.99996)
     parser.add_argument("--precision", choices=("fp32", "bf16", "fp16"), default="bf16")
     parser.add_argument("--seed", type=int, default=42)
@@ -170,6 +178,11 @@ def create_data_loaders(
     world_size: int,
     device: torch.device,
 ) -> tuple[Any, Any, int, int, Any]:
+    if args.dataset_format == "wds" and args.repeated_augmentation:
+        raise ValueError(
+            "timm RepeatAugment requires an indexable dataset; use "
+            "--repeated-augmentation 0 with WebDataset"
+        )
     (
         Mixup,
         create_dataset,

@@ -32,9 +32,12 @@ numbers should not be presented as controlled attention-layer comparisons.
 
 The runner follows the standard DeiT-from-scratch recipe: 300 epochs, AdamW,
 cosine decay with 5 warmup epochs, weight decay 0.05, RandAugment, Mixup 0.8,
-CutMix 1.0, label smoothing 0.1, random erasing 0.25, repeated augmentation,
-stochastic depth 0.1, and EMA evaluation. The base learning rate is `5e-4` at a
-global batch of 512 and scales linearly with global batch size.
+CutMix 1.0, label smoothing 0.1, random erasing 0.25, stochastic depth 0.1, and
+EMA evaluation. The base learning rate is `5e-4` at a global batch of 512 and
+scales linearly with global batch size. RepeatAugment is disabled for all
+reported models because timm's RepeatAugment sampler requires an indexable
+dataset and is unsupported for iterable WebDataset shards. This fixed protocol
+difference must be disclosed when comparing against published DeiT numbers.
 
 Run at least three seeds for every model and report mean plus standard
 deviation of ImageNet validation top-1 and top-5. Select the EMA checkpoint by
