@@ -262,6 +262,109 @@ class StandardMultiheadAttention(nn.Module):
         )
 
 
+class ReducedDimMultiheadAttention(nn.Module):
+    """MHA with reduced Q/K head width and standard per-head Values.
+
+    This matches the controlled ``D_k`` reduction used by Cordonnier et al.
+    for DeiT: only the Query and Key projection width changes, while Values
+    and the output projection retain the model's standard head width.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        qk_head_dim: int,
+        value_head_dim: int,
+        dropout: float = 0.0,
+        bias: bool = False,
+        causal: bool = False,
+    ) -> None:
+        super().__init__()
+        if min(d_model, num_heads, qk_head_dim, value_head_dim) <= 0:
+            raise ValueError(
+                "d_model, num_heads, qk_head_dim, and value_head_dim must be positive"
+            )
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.qk_head_dim = qk_head_dim
+        self.value_head_dim = value_head_dim
+        self.qk_dim = num_heads * qk_head_dim
+        self.value_dim = num_heads * value_head_dim
+        self.dropout = dropout
+        self.causal = causal
+
+        self.q_proj = nn.Linear(d_model, self.qk_dim, bias=bias)
+        self.k_proj = nn.Linear(d_model, self.qk_dim, bias=bias)
+        self.v_proj = nn.Linear(d_model, self.value_dim, bias=bias)
+        self.out_proj = nn.Linear(self.value_dim, d_model, bias=bias)
+        self.attn_dropout = nn.Dropout(dropout)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        for projection in (self.q_proj, self.k_proj, self.v_proj, self.out_proj):
+            nn.init.xavier_uniform_(projection.weight)
+            if projection.bias is not None:
+                nn.init.zeros_(projection.bias)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        key_padding_mask: torch.Tensor | None = None,
+        need_weights: bool = False,
+        past_key_value: KVCache | None = None,
+        use_cache: bool = False,
+        context: torch.Tensor | None = None,
+    ):
+        batch, target_len, _ = x.shape
+        key_value = x if context is None else context
+        source_len = key_value.shape[1]
+        q = self.q_proj(x).view(
+            batch, target_len, self.num_heads, self.qk_head_dim
+        ).transpose(1, 2)
+        k_new = self.k_proj(key_value).view(
+            batch, source_len, self.num_heads, self.qk_head_dim
+        ).transpose(1, 2)
+        v_new = self.v_proj(key_value).view(
+            batch, source_len, self.num_heads, self.value_head_dim
+        ).transpose(1, 2)
+        k, v = _append_to_cache(k_new, v_new, past_key_value)
+        present_key_value = (k, v)
+
+        out_heads = None
+        if not need_weights and attn_mask is None and key_padding_mask is None:
+            out_heads = _sdpa_attention(
+                q,
+                k,
+                v,
+                dropout_p=self.dropout if self.training else 0.0,
+                causal=self.causal,
+            )
+        if out_heads is None:
+            scores = torch.einsum("bhtd,bhsd->bhts", q, k) / math.sqrt(
+                self.qk_head_dim
+            )
+            scores = _apply_masks(
+                scores, self.causal, attn_mask, key_padding_mask
+            )
+            attn = torch.softmax(scores, dim=-1)
+            attn = self.attn_dropout(attn)
+            out_heads = torch.einsum("bhts,bhsv->bhtv", attn, v)
+
+        out = out_heads.transpose(1, 2).contiguous().view(
+            batch, target_len, self.value_dim
+        )
+        out = self.out_proj(out)
+        return _format_attention_output(
+            out,
+            attn if need_weights else None,
+            present_key_value,
+            need_weights=need_weights,
+            use_cache=use_cache,
+        )
+
+
 class CollaborativeAttention(nn.Module):
     """Collaborative multi-head attention with shared Q/K projections.
 

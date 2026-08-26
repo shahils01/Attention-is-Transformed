@@ -37,6 +37,12 @@ bert = [
   "evaluate",
   "transformers",
 ]
+vision = [
+  "pillow",
+  "timm==1.0.19",
+  "torchvision",
+  "webdataset",
+]
 eval = [
   "imageio",
   "openai",

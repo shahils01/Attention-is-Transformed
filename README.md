@@ -41,6 +41,13 @@ pip install -e ".[dev]"
 pytest
 ```
 
+## ImageNet / DeiT
+
+The vision benchmark keeps DeiT-B/16 fixed and compares full MHA, reduced-QK
+MHA, GQA, Collaborative MHA, and GT-MHA. Dataset preparation, the exact 300-epoch
+recipe, parameter audits, DeltaAI launch scripts, and the reporting protocol are
+documented in [docs/vision_imagenet.md](docs/vision_imagenet.md).
+
 ## Smoke Experiments
 
 ```bash

@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import pytest
+import torch
+
+from lgma.baselines import ReducedDimMultiheadAttention
+from lgma.vision import (
+    VISION_ATTENTION_TYPES,
+    DeiTClassifier,
+    DeiTConfig,
+    vision_parameter_counts,
+)
+
+
+def tiny_config(attention_type: str) -> DeiTConfig:
+    return DeiTConfig(
+        image_size=32,
+        patch_size=8,
+        num_classes=10,
+        embed_dim=64,
+        depth=1,
+        num_heads=4,
+        reduced_qk_dim=32,
+        collaborative_qk_dim=32,
+        num_kv_heads=2,
+        num_base_heads=2,
+        num_generators=2,
+        attention_type=attention_type,
+        use_sdpa=False,
+    )
+
+
+@pytest.mark.parametrize("attention_type", sorted(VISION_ATTENTION_TYPES))
+def test_deit_attention_variants_forward_backward(attention_type: str) -> None:
+    model = DeiTClassifier(tiny_config(attention_type))
+    images = torch.randn(2, 3, 32, 32)
+    logits = model(images)
+
+    assert logits.shape == (2, 10)
+    logits.square().mean().backward()
+    assert model.patch_embed.proj.weight.grad is not None
+
+
+def test_reduced_mha_only_reduces_query_and_key_dimensions() -> None:
+    attention = ReducedDimMultiheadAttention(
+        d_model=64,
+        num_heads=4,
+        qk_head_dim=8,
+        value_head_dim=16,
+        bias=True,
+    )
+
+    assert attention.q_proj.out_features == 32
+    assert attention.k_proj.out_features == 32
+    assert attention.v_proj.out_features == 64
+    assert attention.out_proj.in_features == 64
+    assert attention(torch.randn(2, 5, 64)).shape == (2, 5, 64)
+
+
+def test_controlled_parameter_ordering() -> None:
+    mha = vision_parameter_counts(DeiTClassifier(tiny_config("mha")))
+    reduced = vision_parameter_counts(DeiTClassifier(tiny_config("reduced_mha")))
+    gt = vision_parameter_counts(DeiTClassifier(tiny_config("gt_mha_residual")))
+
+    assert reduced["non_attention_parameters"] == mha["non_attention_parameters"]
+    assert gt["non_attention_parameters"] == mha["non_attention_parameters"]
+    assert gt["attention_parameters"] < reduced["attention_parameters"]
+    assert reduced["attention_parameters"] < mha["attention_parameters"]
+
+
+def test_deit_rejects_invalid_attention_counts() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        DeiTConfig(num_base_heads=0)
+
+
+def test_deit_rejects_wrong_image_size_at_runtime() -> None:
+    model = DeiTClassifier(tiny_config("mha"))
+    with pytest.raises(ValueError, match="expected 32x32"):
+        model(torch.randn(1, 3, 24, 32))
