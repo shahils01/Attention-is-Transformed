@@ -18,10 +18,13 @@
 set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-/u/sshaik4/Attention-is-Transformed-vision}
+VENV_DIR=/work/hdd/biad/sshaik4/venvs/lgma-clean
 ARCHIVE=${ARCHIVE:-/work/hdd/biad/sshaik4/lgma_data/imagenet/archive/imagenet-object-localization-challenge.zip}
 OUTPUT_DIR=${OUTPUT_DIR:-/work/nvme/biad/sshaik4/lgma_data/imagenet_wds}
 SAMPLES_PER_SHARD=${SAMPLES_PER_SHARD:-1024}
 
+module load python/miniforge3_pytorch/2.12.0
+source "${VENV_DIR}/bin/activate"
 mkdir -p "${OUTPUT_DIR}" /work/hdd/biad/sshaik4/logs
 cd "${REPO_DIR}"
 
