@@ -13,6 +13,7 @@ __pycache__/
 
 # Generated document artifacts; retain source .md, .tex, and build scripts.
 docs/
+codex-**
 /docs/**/*.docx
 /docs/**/*.pdf
 /docs/**/*.zip
