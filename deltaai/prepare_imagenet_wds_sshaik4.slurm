@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-REPO_DIR=/u/sshaik4/Attention-is-Transformed
+REPO_DIR=${REPO_DIR:-/u/sshaik4/Attention-is-Transformed-vision}
 ARCHIVE=${ARCHIVE:-/work/hdd/biad/sshaik4/lgma_data/imagenet/archive/imagenet-object-localization-challenge.zip}
 OUTPUT_DIR=${OUTPUT_DIR:-/work/nvme/biad/sshaik4/lgma_data/imagenet_wds}
 SAMPLES_PER_SHARD=${SAMPLES_PER_SHARD:-1024}
@@ -29,4 +29,3 @@ python experiments/prepare_imagenet_kaggle.py \
   --archive "${ARCHIVE}" \
   --output-dir "${OUTPUT_DIR}" \
   --samples-per-shard "${SAMPLES_PER_SHARD}"
-

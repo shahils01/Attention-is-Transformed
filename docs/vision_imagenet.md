@@ -53,6 +53,10 @@ sbatch deltaai/setup_vision_env_sshaik4.slurm
 sbatch deltaai/prepare_imagenet_wds_sshaik4.slurm
 ```
 
+On `sshaik4`, these launchers default to the isolated
+`/u/sshaik4/Attention-is-Transformed-vision` worktree so the existing `bert`
+checkout and its untracked files remain untouched.
+
 After both jobs pass, first run one short smoke allocation by overriding
 `EPOCHS=1` and then submit the controlled matrix:
 
@@ -81,4 +85,3 @@ python experiments/audit_vision_models.py --num-base-heads 2
   Macro Design*, CVPR 2024.
 - Liu et al., *EfficientViT: Memory Efficient Vision Transformer with Cascaded
   Group Attention*, CVPR 2023.
-

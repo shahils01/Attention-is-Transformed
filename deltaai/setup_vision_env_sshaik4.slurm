@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-REPO_DIR=/u/sshaik4/Attention-is-Transformed
+REPO_DIR=${REPO_DIR:-/u/sshaik4/Attention-is-Transformed-vision}
 VENV_DIR=/work/hdd/biad/sshaik4/venvs/lgma-clean
 
 module load python/miniforge3_pytorch/2.12.0
@@ -24,4 +24,3 @@ source "${VENV_DIR}/bin/activate"
 cd "${REPO_DIR}"
 python -m pip install -e ".[vision,tracking]"
 python -c 'import timm, torch, webdataset; print(torch.__version__, timm.__version__, webdataset.__version__)'
-

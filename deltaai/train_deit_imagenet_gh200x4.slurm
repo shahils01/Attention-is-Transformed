@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-REPO_DIR=/u/sshaik4/Attention-is-Transformed
+REPO_DIR=${REPO_DIR:-/u/sshaik4/Attention-is-Transformed-vision}
 VENV_DIR=/work/hdd/biad/sshaik4/venvs/lgma-clean
 DATA_DIR=${DATA_DIR:-/work/nvme/biad/sshaik4/lgma_data/imagenet_wds}
 RUNS_DIR=${RUNS_DIR:-/work/hdd/biad/sshaik4/lgma_runs/imagenet}
@@ -75,4 +75,3 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
   --wandb-mode "${WANDB_MODE}" \
   --wandb-run-name "${RUN_NAME}" \
   "${RESUME_ARGS[@]}"
-
