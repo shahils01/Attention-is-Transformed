@@ -30,6 +30,7 @@ INITIALIZATION=${INITIALIZATION:-random}
 NUM_KV_HEADS=${NUM_KV_HEADS:-4}
 NUM_BASE_HEADS=${NUM_BASE_HEADS:-6}
 NUM_GENERATORS=${NUM_GENERATORS:-8}
+NUM_HIDDEN_LAYERS=${NUM_HIDDEN_LAYERS:-}
 GT_QK_BASE_DIM=${GT_QK_BASE_DIM:-}
 GT_VALUE_HEAD_DIM=${GT_VALUE_HEAD_DIM:-}
 SEED=${SEED:-42}
@@ -38,14 +39,24 @@ MODEL_NAME=${MODEL_NAME:-google-bert/bert-base-uncased}
 WANDB_PROJECT=${WANDB_PROJECT:-bert-gt-mha}
 GENERATOR_MIXING=${GENERATOR_MIXING:-softmax}
 ENFORCE_PAPER_GT_MHA=${ENFORCE_PAPER_GT_MHA:-false}
+USE_SDPA=${USE_SDPA:-true}
 
 case "${ENFORCE_PAPER_GT_MHA}" in
   true) PAPER_ARGS=(--enforce-paper-gt-mha) ;;
   false) PAPER_ARGS=(--no-enforce-paper-gt-mha) ;;
   *) echo "ENFORCE_PAPER_GT_MHA must be true or false" >&2; exit 2 ;;
 esac
+case "${USE_SDPA}" in
+  true) SDPA_ARGS=(--use-sdpa) ;;
+  false) SDPA_ARGS=(--no-use-sdpa) ;;
+  *) echo "USE_SDPA must be true or false" >&2; exit 2 ;;
+esac
 
 GT_DIM_ARGS=()
+DEPTH_ARGS=()
+if [[ -n "${NUM_HIDDEN_LAYERS}" ]]; then
+  DEPTH_ARGS+=(--num-hidden-layers "${NUM_HIDDEN_LAYERS}")
+fi
 if [[ -n "${GT_QK_BASE_DIM}" ]]; then
   GT_DIM_ARGS+=(--gt-qk-base-dim "${GT_QK_BASE_DIM}")
 fi
@@ -72,7 +83,7 @@ case "${ATTENTION_TYPE}" in
       --num-base-heads "${NUM_BASE_HEADS}"
       --num-generators "${NUM_GENERATORS}"
       --generator-mixing "${GENERATOR_MIXING}"
-      --use-sdpa
+      "${SDPA_ARGS[@]}"
       --fuse-base-qkv
       --sdpa-gqa-mode native
       "${GT_DIM_ARGS[@]}"
@@ -85,7 +96,7 @@ case "${ATTENTION_TYPE}" in
       --num-base-heads "${NUM_BASE_HEADS}"
       --num-generators "${NUM_GENERATORS}"
       --generator-mixing "${GENERATOR_MIXING}"
-      --use-sdpa
+      "${SDPA_ARGS[@]}"
       --fuse-base-qkv
       --sdpa-gqa-mode native
       "${GT_DIM_ARGS[@]}"
@@ -106,6 +117,10 @@ DIM_SUFFIX=
 if [[ -n "${GT_QK_BASE_DIM}" ]]; then
   DIM_SUFFIX=_qk${GT_QK_BASE_DIM}v${GT_VALUE_HEAD_DIM:-64}
 fi
+DEPTH_SUFFIX=
+if [[ -n "${NUM_HIDDEN_LAYERS}" ]]; then
+  DEPTH_SUFFIX=_l${NUM_HIDDEN_LAYERS}
+fi
 if [[ "${ATTENTION_TYPE}" == "gqa" ]]; then
   RUN_NAME=bert_base_gqa_kv${NUM_KV_HEADS}h12_${INITIALIZATION}_seed${SEED}
 elif [[ "${ATTENTION_TYPE}" == "mqa" ]]; then
@@ -113,7 +128,7 @@ elif [[ "${ATTENTION_TYPE}" == "mqa" ]]; then
 elif [[ "${ATTENTION_TYPE}" == "collaborative" ]]; then
   RUN_NAME=bert_base_collaborative_h12_${INITIALIZATION}_seed${SEED}
 else
-  RUN_NAME=bert_base_${ATTENTION_TYPE}_b${NUM_BASE_HEADS}g${NUM_GENERATORS}h12${DIM_SUFFIX}_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}
+  RUN_NAME=bert_base_${ATTENTION_TYPE}_b${NUM_BASE_HEADS}g${NUM_GENERATORS}h12${DEPTH_SUFFIX}${DIM_SUFFIX}_${INITIALIZATION}_seed${SEED}${MIXING_SUFFIX}
 fi
 OUTPUT_DIR=${PROJECT_DIR}/lgma_runs/${RUN_NAME}
 
@@ -145,6 +160,7 @@ fi
 python -m torch.distributed.run --standalone --nproc_per_node=4 experiments/train_bert_mlm.py \
   --model-name-or-path "${MODEL_NAME}" \
   --initialization "${INITIALIZATION}" \
+  "${DEPTH_ARGS[@]}" \
   "${ATTENTION_ARGS[@]}" \
   --dataset-name wikitext \
   --dataset-config wikitext-103-raw-v1 \

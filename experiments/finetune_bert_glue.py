@@ -57,6 +57,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-train-epochs", type=float, default=3.0)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument(
+        "--save-total-limit",
+        type=int,
+        default=1,
+        help="Maximum number of epoch checkpoints retained per fine-tuning run.",
+    )
+    p.add_argument(
+        "--metric-for-best-model",
+        help=(
+            "Trainer metric used to restore the best epoch. Defaults to eval loss "
+            "for backward compatibility; use combined_score for STS-B."
+        ),
+    )
+    p.add_argument(
+        "--greater-is-better",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Direction for --metric-for-best-model (inferred when omitted).",
+    )
     p.add_argument("--bf16", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--report-to", default="wandb")
@@ -90,7 +109,7 @@ def main() -> None:
         set_seed, Trainer, TrainingArguments,
     ) = dependencies()
     set_seed(args.seed)
-    raw = load_dataset("glue", args.task)
+    raw = load_dataset("nyu-mll/glue", args.task)
     regression = args.task == "stsb"
     num_labels = 1 if regression else raw["train"].features["label"].num_classes
     tokenizer = AutoTokenizer.from_pretrained(
@@ -126,6 +145,12 @@ def main() -> None:
             values["combined_score"] = float(np.mean(list(values.values())))
         return values
 
+    best_metric = args.metric_for_best_model or "eval_loss"
+    greater_is_better = (
+        args.greater_is_better
+        if args.greater_is_better is not None
+        else best_metric not in {"loss", "eval_loss"}
+    )
     kwargs = {
         "output_dir": str(args.output_dir),
         "per_device_train_batch_size": args.per_device_train_batch_size,
@@ -136,9 +161,11 @@ def main() -> None:
         "seed": args.seed, "data_seed": args.seed,
         "dataloader_num_workers": args.num_workers, "bf16": args.bf16, "fp16": args.fp16,
         "logging_strategy": "steps", "logging_steps": 50, "save_strategy": "epoch",
+        "save_total_limit": args.save_total_limit,
         "report_to": [] if args.report_to == "none" else [args.report_to],
         "run_name": args.run_name, "load_best_model_at_end": True,
-        "metric_for_best_model": "eval_loss",
+        "metric_for_best_model": best_metric,
+        "greater_is_better": greater_is_better,
     }
     key = "eval_strategy" if "eval_strategy" in inspect.signature(TrainingArguments.__init__).parameters else "evaluation_strategy"
     kwargs[key] = "epoch"

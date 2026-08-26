@@ -92,6 +92,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-name-or-path", default="google-bert/bert-base-uncased")
     p.add_argument("--attention-type", choices=sorted(BERT_ATTENTION_TYPES), default="mha")
     p.add_argument("--initialization", choices=["checkpoint", "random"], default="checkpoint")
+    p.add_argument(
+        "--num-hidden-layers",
+        type=int,
+        help="Override the BERT encoder depth when using random initialization.",
+    )
     p.add_argument("--num-kv-heads", type=int, default=4)
     p.add_argument("--num-base-heads", type=int, default=4)
     p.add_argument("--num-generators", type=int, default=8)
@@ -198,7 +203,8 @@ def main() -> None:
     )
     model, audit = load_bert_masked_lm(
         args.model_name_or_path, attention_type=args.attention_type,
-        initialization=args.initialization, num_kv_heads=effective_num_kv_heads,
+        initialization=args.initialization, num_hidden_layers=args.num_hidden_layers,
+        num_kv_heads=effective_num_kv_heads,
         num_base_heads=args.num_base_heads,
         num_generators=args.num_generators, qk_base_dim=args.gt_qk_base_dim,
         value_head_dim=args.gt_value_head_dim, generator_mixing=args.generator_mixing,
@@ -292,6 +298,7 @@ def main() -> None:
     trainer = Trainer(**trainer_kwargs)
     manifest = {
         "model_name_or_path": args.model_name_or_path, "initialization": args.initialization,
+        "num_hidden_layers": int(model.config.num_hidden_layers),
         "attention_type": args.attention_type, "num_kv_heads": effective_num_kv_heads,
         "num_base_heads": args.num_base_heads,
         "num_generators": args.num_generators,

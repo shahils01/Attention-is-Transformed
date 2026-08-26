@@ -572,6 +572,29 @@ def test_saved_gt_mha_checkpoint_round_trip(tmp_path) -> None:
     assert torch.equal(actual, expected)
 
 
+def test_random_mlm_can_override_encoder_depth(tmp_path) -> None:
+    transformers = pytest.importorskip("transformers")
+    config = transformers.BertConfig(
+        vocab_size=101,
+        hidden_size=96,
+        num_hidden_layers=1,
+        num_attention_heads=12,
+        intermediate_size=192,
+    )
+    config.save_pretrained(tmp_path)
+
+    model, audit = load_bert_masked_lm(
+        str(tmp_path),
+        attention_type="gt_mha_residual",
+        initialization="random",
+        num_hidden_layers=3,
+    )
+
+    assert model.config.num_hidden_layers == 3
+    assert len(model.bert.encoder.layer) == 3
+    assert len(audit) == 3
+
+
 def test_saved_gqa_checkpoint_round_trip(tmp_path) -> None:
     transformers = pytest.importorskip("transformers")
     config = transformers.BertConfig(

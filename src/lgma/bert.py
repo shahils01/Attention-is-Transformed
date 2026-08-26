@@ -722,6 +722,7 @@ def load_bert_masked_lm(
     *,
     attention_type: BertAttentionType | None = None,
     initialization: Literal["checkpoint", "random"] = "checkpoint",
+    num_hidden_layers: int | None = None,
     num_kv_heads: int = 4,
     num_base_heads: int = 4,
     num_generators: int = 8,
@@ -739,6 +740,8 @@ def load_bert_masked_lm(
     except ImportError as exc:
         raise ImportError("install BERT dependencies with `pip install -e '.[bert]'`") from exc
     path = Path(model_name_or_path)
+    if num_hidden_layers is not None and num_hidden_layers <= 0:
+        raise ValueError("num_hidden_layers must be positive")
     manifest_path, state_path = path / "bert_gt_mha_manifest.json", path / "gt_mha_state_dict.pt"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else None
     if manifest:
@@ -781,9 +784,15 @@ def load_bert_masked_lm(
         model.load_state_dict(state, strict=True)
         return model, audit
     if initialization == "checkpoint":
+        if num_hidden_layers is not None:
+            raise ValueError(
+                "num_hidden_layers can only be overridden with random initialization"
+            )
         model = AutoModelForMaskedLM.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
     elif initialization == "random":
         config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
+        if num_hidden_layers is not None:
+            config.num_hidden_layers = num_hidden_layers
         model = AutoModelForMaskedLM.from_config(config, trust_remote_code=trust_remote_code)
     else:
         raise ValueError("initialization must be 'checkpoint' or 'random'")
