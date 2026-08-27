@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import json
 
 import pytest
 import torch
@@ -27,6 +28,49 @@ def test_webdataset_rejects_repeat_augmentation() -> None:
     args = Namespace(dataset_format="wds", repeated_augmentation=3)
     with pytest.raises(ValueError, match="requires an indexable dataset"):
         create_data_loaders(args, world_size=1, device=torch.device("cpu"))
+
+
+def test_exact_wds_validation_resets_distributed_reader() -> None:
+    from types import SimpleNamespace
+
+    from experiments.train_imagenet_deit import configure_exact_wds_validation
+
+    reader = SimpleNamespace(
+        ds=None,
+        dist_rank=2,
+        dist_num_replicas=4,
+        global_worker_id=2,
+        global_num_workers=48,
+    )
+    configure_exact_wds_validation(SimpleNamespace(reader=reader))
+
+    assert reader.dist_rank == 0
+    assert reader.dist_num_replicas == 1
+    assert reader.global_worker_id == 0
+    assert reader.global_num_workers == 1
+
+
+def test_wds_split_rejects_class_homogeneous_training_shards(tmp_path: Path) -> None:
+    from experiments.train_imagenet_deit import _wds_split
+
+    manifest = {
+        "format": "webdataset",
+        "num_classes": 1000,
+        "train_order": "deterministic_random_shuffle",
+        "splits": {
+            "train": {
+                "pattern": "train-{00000..00000}.tar",
+                "samples": 1024,
+                "shards": [
+                    {"name": "train-00000.tar", "samples": 1024, "unique_classes": 1}
+                ],
+            }
+        },
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="insufficiently class-mixed"):
+        _wds_split(tmp_path, "train")
 
 
 def tiny_config(attention_type: str) -> DeiTConfig:

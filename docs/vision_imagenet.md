@@ -45,11 +45,21 @@ validation top-1 using the same rule for every model. Also report exact
 parameters, peak memory, and images/second. Do not tune GT-MHA on validation
 more extensively than the baselines.
 
+The WebDataset converter deterministically shuffles all training entries before
+forming shards. This is required because the source archive is organized by
+class and filename-ordered shards produce highly non-IID minibatches. The
+rank-zero validation reader is explicitly reset to one replica so reported
+metrics cover all 50,000 validation images exactly once. Every epoch summary
+must therefore report `validation/samples=50000`; treat any other value as a
+failed evaluation.
+
 ## DeltaAI workflow
 
-The authorized Kaggle archive remains on HDD. Conversion reads it directly and
-writes only train/validation JPEGs and labels as resumable WebDataset shards on
-NVMe:
+DeltaAI's shared ImageNet collection is a broader synset archive rather than a
+ready ILSVRC-2012 train/validation tree. Use the authorized competition archive
+as the authoritative source to build the exact 1,000-class benchmark cache on
+NVMe. The one-time conversion writes deterministically class-mixed shards; the
+source archive can be removed after the cache and loader audits pass:
 
 ```bash
 sbatch deltaai/setup_vision_env_sshaik4.slurm

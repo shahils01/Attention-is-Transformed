@@ -19,7 +19,7 @@ set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-/u/sshaik4/Attention-is-Transformed-vision}
 VENV_DIR=/work/hdd/biad/sshaik4/venvs/lgma-vision
-DATA_DIR=${DATA_DIR:-/work/nvme/biad/sshaik4/lgma_data/imagenet_wds}
+DATA_DIR=${DATA_DIR:-/work/nvme/biad/sshaik4/lgma_data/imagenet_wds_official}
 RUNS_DIR=${RUNS_DIR:-/work/hdd/biad/sshaik4/lgma_runs/imagenet}
 ATTENTION_TYPE=${ATTENTION_TYPE:-gt_mha_residual}
 NUM_BASE_HEADS=${NUM_BASE_HEADS:-4}
@@ -31,10 +31,16 @@ SEED=${SEED:-42}
 EPOCHS=${EPOCHS:-300}
 BATCH_SIZE=${BATCH_SIZE:-256}
 WANDB_MODE=${WANDB_MODE:-online}
+MAX_GRADIENT_NORM=${MAX_GRADIENT_NORM:-}
+RUN_SUFFIX=${RUN_SUFFIX:-}
+MINIMUM_FINAL_TOP1=${MINIMUM_FINAL_TOP1:-}
 
 RUN_NAME=deit_b16_${ATTENTION_TYPE}_seed${SEED}
 if [[ "${ATTENTION_TYPE}" == "gt_mha_"* ]]; then
   RUN_NAME=${RUN_NAME}_b${NUM_BASE_HEADS}g${NUM_GENERATORS}
+fi
+if [[ -n "${RUN_SUFFIX}" ]]; then
+  RUN_NAME=${RUN_NAME}_${RUN_SUFFIX}
 fi
 OUTPUT_DIR=${RUNS_DIR}/${RUN_NAME}
 
@@ -56,6 +62,16 @@ if [[ -f "${OUTPUT_DIR}/checkpoint_last.pt" ]]; then
   RESUME_ARGS=(--resume "${OUTPUT_DIR}/checkpoint_last.pt")
 fi
 
+GRADIENT_ARGS=()
+if [[ -n "${MAX_GRADIENT_NORM}" ]]; then
+  GRADIENT_ARGS=(--max-gradient-norm "${MAX_GRADIENT_NORM}")
+fi
+
+SMOKE_GUARD_ARGS=()
+if [[ -n "${MINIMUM_FINAL_TOP1}" ]]; then
+  SMOKE_GUARD_ARGS=(--minimum-final-top1 "${MINIMUM_FINAL_TOP1}")
+fi
+
 python -m torch.distributed.run --standalone --nproc_per_node=4 \
   experiments/train_imagenet_deit.py \
   --data-dir "${DATA_DIR}" \
@@ -74,4 +90,6 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
   --seed "${SEED}" \
   --wandb-mode "${WANDB_MODE}" \
   --wandb-run-name "${RUN_NAME}" \
+  "${GRADIENT_ARGS[@]}" \
+  "${SMOKE_GUARD_ARGS[@]}" \
   "${RESUME_ARGS[@]}"

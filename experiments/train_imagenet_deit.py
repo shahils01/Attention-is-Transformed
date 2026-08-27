@@ -52,6 +52,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-learning-rate", type=float, default=1e-6)
     parser.add_argument("--min-learning-rate", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=0.05)
+    parser.add_argument(
+        "--max-gradient-norm",
+        type=float,
+        help="Optionally clip the global gradient norm; norms are logged regardless.",
+    )
     parser.add_argument("--drop-path-rate", type=float, default=0.1)
     parser.add_argument("--mixup", type=float, default=0.8)
     parser.add_argument("--cutmix", type=float, default=1.0)
@@ -73,6 +78,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-train-batches", type=int)
     parser.add_argument("--max-val-batches", type=int)
+    parser.add_argument(
+        "--minimum-final-top1",
+        type=float,
+        help="Fail the job when the final validation top-1 is below this smoke-test threshold.",
+    )
     parser.add_argument("--log-interval", type=int, default=50)
     parser.add_argument("--wandb-project", default="gt-mha-imagenet")
     parser.add_argument("--wandb-entity", default="i2rLAB")
@@ -166,6 +176,27 @@ def _wds_split(data_dir: Path, split: str) -> tuple[str, int]:
     if not manifest_path.is_file():
         raise FileNotFoundError(f"missing WebDataset manifest: {manifest_path}")
     manifest = json.loads(manifest_path.read_text())
+    if split == "train":
+        if manifest.get("train_order") != "deterministic_random_shuffle":
+            raise ValueError(
+                "training shards are not marked as deterministically shuffled"
+            )
+        shard_records = manifest["splits"]["train"].get("shards", [])
+        if not shard_records or any("unique_classes" not in row for row in shard_records):
+            raise ValueError("training shard class-diversity audit is missing")
+        num_classes = int(manifest.get("num_classes", 0))
+        minimum_classes = min(32, num_classes)
+        poorly_mixed = [
+            row["name"]
+            for row in shard_records
+            if int(row["samples"]) >= 128
+            and int(row["unique_classes"]) < minimum_classes
+        ]
+        if poorly_mixed:
+            raise ValueError(
+                "training shards are insufficiently class-mixed: "
+                + ", ".join(poorly_mixed[:5])
+            )
     split_manifest = manifest["splits"][split]
     return f'{split_manifest["pattern"]}|{split_manifest["samples"]}', int(
         split_manifest["samples"]
@@ -214,6 +245,7 @@ def create_data_loaders(
             seed=args.seed,
             num_samples=val_samples,
         )
+        configure_exact_wds_validation(val_dataset)
     else:
         train_dataset = create_dataset(
             "",
@@ -285,6 +317,30 @@ def create_data_loaders(
     return train_loader, val_loader, train_samples, val_samples, mixup
 
 
+def configure_exact_wds_validation(dataset: Any) -> None:
+    """Make a rank-zero WDS validation loader read every shard exactly once.
+
+    ``ReaderWds`` captures the initialized distributed world when constructed.
+    Passing ``distributed=False`` to timm's loader does not undo that reader
+    split. Since ``evaluate_exact`` intentionally evaluates only on rank zero,
+    reset the still-lazy validation reader to one replica before workers start.
+    """
+    reader = getattr(dataset, "reader", None)
+    if reader is None:
+        raise TypeError("WebDataset validation dataset does not expose a reader")
+    if getattr(reader, "ds", None) is not None:
+        raise RuntimeError("WebDataset validation reader was initialized too early")
+    for name, value in (
+        ("dist_rank", 0),
+        ("dist_num_replicas", 1),
+        ("global_worker_id", 0),
+        ("global_num_workers", 1),
+    ):
+        if not hasattr(reader, name):
+            raise TypeError(f"WebDataset reader is missing {name}")
+        setattr(reader, name, value)
+
+
 def set_learning_rate(
     optimizer: torch.optim.Optimizer,
     step: int,
@@ -317,6 +373,23 @@ def autocast_context(device: torch.device, precision: str):
 
 def unwrap_model(model: nn.Module) -> nn.Module:
     return model.module if isinstance(model, DistributedDataParallel) else model
+
+
+def gradient_l2_norm(model: nn.Module) -> float:
+    squared: torch.Tensor | None = None
+    for parameter in model.parameters():
+        if parameter.grad is not None:
+            term = parameter.grad.detach().float().square().sum()
+            squared = term if squared is None else squared + term
+    return 0.0 if squared is None else float(squared.sqrt())
+
+
+def parameter_l2_norm(model: nn.Module) -> float:
+    squared: torch.Tensor | None = None
+    for parameter in model.parameters():
+        term = parameter.detach().float().square().sum()
+        squared = term if squared is None else squared + term
+    return 0.0 if squared is None else float(squared.sqrt())
 
 
 def reduce_statistics(values: list[float], device: torch.device) -> list[float]:
@@ -424,6 +497,10 @@ def save_checkpoint(
 
 def main() -> None:
     args = parse_args()
+    if args.max_gradient_norm is not None and args.max_gradient_norm <= 0:
+        raise SystemExit("--max-gradient-norm must be positive")
+    if args.minimum_final_top1 is not None and args.minimum_final_top1 < 0:
+        raise SystemExit("--minimum-final-top1 must be non-negative")
     rank, local_rank, world_size, device = setup_distributed()
     seed_everything(args.seed, rank)
     config = model_config(args)
@@ -540,6 +617,7 @@ def main() -> None:
             + "\n"
         )
 
+    last_validation_top1: float | None = None
     for epoch in range(start_epoch, args.epochs):
         # Epoch-scoped seeds keep main-process Mixup and stochastic-depth draws
         # stable when a 48-hour allocation resumes at an epoch boundary.
@@ -568,16 +646,42 @@ def main() -> None:
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
             images, targets = mixup(images, targets)
+            next_global_step = global_step + 1
+            measure_diagnostics = (
+                is_primary(rank) and next_global_step % args.log_interval == 0
+            )
             optimizer.zero_grad(set_to_none=True)
             with autocast_context(device, args.precision):
                 logits = model(images)
                 loss = criterion(logits, targets)
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
+                if args.max_gradient_norm is not None or measure_diagnostics:
+                    scaler.unscale_(optimizer)
+                if args.max_gradient_norm is not None:
+                    gradient_norm = float(
+                        torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), args.max_gradient_norm
+                        )
+                    )
+                elif measure_diagnostics:
+                    gradient_norm = gradient_l2_norm(model)
+                else:
+                    gradient_norm = None
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
+                if args.max_gradient_norm is not None:
+                    gradient_norm = float(
+                        torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), args.max_gradient_norm
+                        )
+                    )
+                elif measure_diagnostics:
+                    gradient_norm = gradient_l2_norm(model)
+                else:
+                    gradient_norm = None
                 optimizer.step()
             model_ema.update(unwrap_model(model))
             batch_samples = images.shape[0]
@@ -588,8 +692,11 @@ def main() -> None:
                 payload = {
                     "epoch": epoch,
                     "step": global_step,
-                    "train/loss": loss_sum / max(sample_count, 1),
+                    "train/loss": float(loss.detach()),
+                    "train/epoch_loss_so_far": loss_sum / max(sample_count, 1),
                     "train/learning_rate": learning_rate,
+                    "train/gradient_norm": gradient_norm,
+                    "train/parameter_norm": parameter_l2_norm(unwrap_model(model)),
                 }
                 print(json.dumps(payload), flush=True)
                 if wandb_run is not None:
@@ -607,6 +714,7 @@ def main() -> None:
             args.max_val_batches,
             rank,
         )
+        last_validation_top1 = validation["top1"]
         peak_memory = (
             torch.cuda.max_memory_allocated(device) / 2**30 if device.type == "cuda" else 0.0
         )
@@ -619,6 +727,7 @@ def main() -> None:
             "validation/loss": validation["loss"],
             "validation/top1": validation["top1"],
             "validation/top5": validation["top5"],
+            "validation/samples": validation["samples"],
             "validation/images_per_second": validation["images_per_second"],
         }
         if is_primary(rank):
@@ -655,6 +764,19 @@ def main() -> None:
 
     if wandb_run is not None:
         wandb_run.finish()
+    if (
+        args.minimum_final_top1 is not None
+        and (
+            last_validation_top1 is None
+            or last_validation_top1 < args.minimum_final_top1
+        )
+    ):
+        if dist.is_initialized():
+            dist.destroy_process_group()
+        raise SystemExit(
+            f"final validation top-1 {last_validation_top1} is below required "
+            f"{args.minimum_final_top1}"
+        )
     if dist.is_initialized():
         dist.destroy_process_group()
 
