@@ -44,7 +44,7 @@ class VLAPolicyConfig:
     num_generators: int = 4
     generator_type: str = "full"
     generator_mixing: str = "softmax"
-    theta_init_scale: float = 0.02
+    theta_init_scale: float = 4.0
     generator_init_scale: float = 0.02
     stabilize_generators: bool = True
     normalize_generators: bool = False

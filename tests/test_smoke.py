@@ -10,7 +10,7 @@ from lgma.transformer import TinyTransformerLM, build_attention, tiny_lm_from_co
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_lgma_presets_default_to_random_sphere_and_respect_explicit_circle():
+def test_lgma_presets_default_to_balanced_simplex_and_respect_explicit_circle():
     for attention_type in (
         "lgma_v2",
         "lgma_residual",
@@ -26,7 +26,7 @@ def test_lgma_presets_default_to_random_sphere_and_respect_explicit_circle():
             head_dim=8,
             num_generators=4,
         )
-        assert layer.theta_init == "random_sphere"
+        assert layer.theta_init == "balanced_simplex"
 
     circle_layer = build_attention(
         attention_type="lgma_residual",
@@ -535,14 +535,14 @@ def test_tinystories_eval_and_generation_helpers_load_checkpoint(tmp_path):
         "dropout": 0.0,
         "num_kv_heads": None,
         "causal": True,
-        "theta_init_scale": 0.02,
+        "theta_init_scale": 4.0,
         "generator_init_scale": 0.02,
         "base_dim": None,
         "value_dim": None,
         "num_base_heads": 1,
         "metric_mode": "exp",
         "metric_beta": 1.0,
-        "theta_init": "random_sphere",
+        "theta_init": "balanced_simplex",
         "logit_scale_mode": "sqrt_dim",
         "learn_head_temperature": False,
         "value_transform": "none",

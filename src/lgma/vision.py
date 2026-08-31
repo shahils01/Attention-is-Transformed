@@ -60,6 +60,9 @@ class DeiTConfig:
     num_base_heads: int = 4
     num_generators: int = 8
     generator_mixing: str = "softmax"
+    theta_init: str = "balanced_simplex"
+    theta_init_scale: float = 4.0
+    generator_init_scale: float = 0.02
     use_sdpa: bool = True
     fuse_base_qkv: bool = True
     fold_value_transform_into_output: bool = True
@@ -92,6 +95,12 @@ class DeiTConfig:
             raise ValueError("num_heads must be divisible by num_kv_heads")
         if self.num_heads % self.num_base_heads:
             raise ValueError("num_heads must be divisible by num_base_heads")
+        if self.theta_init not in {"balanced_simplex", "random_sphere", "circle"}:
+            raise ValueError(f"unsupported theta_init: {self.theta_init}")
+        if self.theta_init_scale < 0 or self.generator_init_scale <= 0:
+            raise ValueError(
+                "theta_init_scale must be non-negative and generator_init_scale positive"
+            )
         if not 0.0 <= self.drop_rate < 1.0:
             raise ValueError("drop_rate must be in [0, 1)")
         if not 0.0 <= self.attention_drop_rate < 1.0:
@@ -205,7 +214,9 @@ def build_vision_attention(config: DeiTConfig) -> nn.Module:
         base_dim=head_dim,
         value_dim=head_dim,
         metric_mode=mode,
-        theta_init="random_sphere",
+        theta_init=config.theta_init,
+        theta_init_scale=config.theta_init_scale,
+        generator_init_scale=config.generator_init_scale,
         logit_scale_mode="sqrt_dim",
         learn_head_temperature=False,
         value_transform="lie",

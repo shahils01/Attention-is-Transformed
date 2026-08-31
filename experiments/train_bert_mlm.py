@@ -114,6 +114,13 @@ def parse_args() -> argparse.Namespace:
         "--generator-mixing", "--generator_mixing",
         dest="generator_mixing", choices=["softmax", "none"], default="softmax",
     )
+    p.add_argument(
+        "--theta-init",
+        choices=["balanced_simplex", "random_sphere", "circle"],
+        default="balanced_simplex",
+    )
+    p.add_argument("--theta-init-scale", type=float, default=4.0)
+    p.add_argument("--generator-init-scale", type=float, default=0.02)
     p.add_argument("--use-sdpa", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--fuse-base-qkv", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--sdpa-gqa-mode", choices=["auto", "native", "expand"], default="auto")
@@ -208,6 +215,8 @@ def main() -> None:
         num_base_heads=args.num_base_heads,
         num_generators=args.num_generators, qk_base_dim=args.gt_qk_base_dim,
         value_head_dim=args.gt_value_head_dim, generator_mixing=args.generator_mixing,
+        theta_init=args.theta_init, theta_init_scale=args.theta_init_scale,
+        generator_init_scale=args.generator_init_scale,
         use_sdpa=args.use_sdpa, fuse_base_qkv=args.fuse_base_qkv,
         sdpa_gqa_mode=args.sdpa_gqa_mode,
         enforce_paper_gt_mha=args.enforce_paper_gt_mha,
@@ -305,6 +314,9 @@ def main() -> None:
         "qk_base_dim": args.gt_qk_base_dim,
         "value_head_dim": args.gt_value_head_dim,
         "generator_mixing": args.generator_mixing,
+        "theta_init": args.theta_init,
+        "theta_init_scale": args.theta_init_scale,
+        "generator_init_scale": args.generator_init_scale,
         "use_sdpa": args.use_sdpa, "fuse_base_qkv": args.fuse_base_qkv,
         "sdpa_gqa_mode": args.sdpa_gqa_mode,
         "enforce_paper_gt_mha": args.enforce_paper_gt_mha,

@@ -118,7 +118,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional separate gain for value Lie transforms. Defaults to metric_beta.",
     )
-    parser.add_argument("--theta_init", choices=["random_sphere", "circle"], default="random_sphere")
+    parser.add_argument(
+        "--theta_init",
+        choices=["balanced_simplex", "random_sphere", "circle"],
+        default="balanced_simplex",
+    )
     parser.add_argument("--logit_scale_mode", choices=["sqrt_dim", "rms_metric"], default="sqrt_dim")
     parser.add_argument("--learn_head_temperature", action="store_true")
     parser.add_argument(

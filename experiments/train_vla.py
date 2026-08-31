@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
         default="softmax",
         help="Map per-head generator coordinates with softmax or use them directly.",
     )
-    parser.add_argument("--theta_init_scale", type=float, default=0.02)
+    parser.add_argument("--theta_init_scale", type=float, default=4.0)
     parser.add_argument("--generator_init_scale", type=float, default=0.02)
     parser.add_argument(
         "--stabilize_generators",

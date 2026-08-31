@@ -33,8 +33,12 @@ def args_parser() -> argparse.ArgumentParser:
     p.add_argument('--fold-value-transform-into-output', action=argparse.BooleanOptionalAction, default=False)
     p.add_argument('--sdpa-gqa-mode', choices=['auto', 'native', 'expand'], default='auto')
     p.add_argument('--generator-mixing', choices=['softmax', 'none'], default='softmax')
-    p.add_argument('--theta-init', choices=['random_sphere', 'circle'], default='random_sphere')
-    p.add_argument('--theta-init-scale', type=float, default=0.02); p.add_argument('--generator-init-scale', type=float, default=0.02)
+    p.add_argument(
+        '--theta-init',
+        choices=['balanced_simplex', 'random_sphere', 'circle'],
+        default='balanced_simplex',
+    )
+    p.add_argument('--theta-init-scale', type=float, default=4.0); p.add_argument('--generator-init-scale', type=float, default=0.02)
     p.add_argument('--metric-beta', type=float, default=1.0); p.add_argument('--value-beta', type=float)
     p.add_argument('--base-dim', type=int); p.add_argument('--value-dim', type=int); p.add_argument('--num-base-heads', type=int, default=1)
     p.add_argument('--value-transform', default='none'); p.add_argument('--dropout', type=float, default=.1)

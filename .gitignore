@@ -1,12 +1,37 @@
 # Python bytecode and caches
 *.py[cod]
 __pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local Python environments and secrets
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
 
 # Runtime and generated output directories
 /output/
 /outputs/
 /logs/
 /tmp/
+wandb/
+.wandb/
+slurm-*.out
+slurm-*.err
+
+# Model checkpoints and dataset archives
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.tar
+*.tar.gz
 
 # OS metadata
 .DS_Store
@@ -25,4 +50,3 @@ ospool/.wandb_api_key
 
 iclr2026_conference.tex
 official_glue_submissions/
-.venv/ß≈

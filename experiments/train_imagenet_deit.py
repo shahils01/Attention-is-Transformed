@@ -43,6 +43,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-base-heads", type=int, default=4)
     parser.add_argument("--num-generators", type=int, default=8)
     parser.add_argument("--generator-mixing", choices=("softmax", "none"), default="softmax")
+    parser.add_argument(
+        "--theta-init",
+        choices=("balanced_simplex", "random_sphere", "circle"),
+        default="balanced_simplex",
+    )
+    parser.add_argument("--theta-init-scale", type=float, default=4.0)
+    parser.add_argument("--generator-init-scale", type=float, default=0.02)
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=256, help="Per-device batch size")
     parser.add_argument("--workers", type=int, default=12)
@@ -146,6 +153,9 @@ def model_config(args: argparse.Namespace) -> DeiTConfig:
         num_base_heads=args.num_base_heads,
         num_generators=args.num_generators,
         generator_mixing=args.generator_mixing,
+        theta_init=args.theta_init,
+        theta_init_scale=args.theta_init_scale,
+        generator_init_scale=args.generator_init_scale,
         drop_path_rate=args.drop_path_rate,
     )
 

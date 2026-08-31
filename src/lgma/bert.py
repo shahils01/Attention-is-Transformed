@@ -323,6 +323,9 @@ class BertGtMhaConfig:
     value_head_dim: int | None = None
     generator_type: str = "full"
     generator_mixing: str = "softmax"
+    theta_init: str = "balanced_simplex"
+    theta_init_scale: float = 4.0
+    generator_init_scale: float = 0.02
     use_sdpa: bool = False
     fuse_base_qkv: bool = False
     sdpa_gqa_mode: str = "auto"
@@ -351,6 +354,12 @@ class BertGtMhaConfig:
             raise ValueError("num_attention_heads must be divisible by num_base_heads")
         if self.attention_type not in GT_MHA_BERT_ATTENTION_TYPES:
             raise ValueError(f"unsupported BERT GT-MHA attention type: {self.attention_type}")
+        if self.theta_init not in {"balanced_simplex", "random_sphere", "circle"}:
+            raise ValueError(f"unsupported theta_init: {self.theta_init}")
+        if self.theta_init_scale < 0 or self.generator_init_scale <= 0:
+            raise ValueError(
+                "theta_init_scale must be non-negative and generator_init_scale positive"
+            )
 
 
 class BertGtMhaSelfAttention(nn.Module):
@@ -384,7 +393,9 @@ class BertGtMhaSelfAttention(nn.Module):
             base_dim=config.qk_base_dim,
             value_dim=config.value_head_dim,
             metric_mode=mode,
-            theta_init="random_sphere",
+            theta_init=config.theta_init,
+            theta_init_scale=config.theta_init_scale,
+            generator_init_scale=config.generator_init_scale,
             logit_scale_mode="sqrt_dim",
             learn_head_temperature=False,
             value_transform="lie",
@@ -618,6 +629,9 @@ def replace_bert_self_attention(
     qk_base_dim: int | None = None,
     value_head_dim: int | None = None,
     generator_mixing: str = "softmax",
+    theta_init: str = "balanced_simplex",
+    theta_init_scale: float = 4.0,
+    generator_init_scale: float = 0.02,
     use_sdpa: bool = False,
     fuse_base_qkv: bool = False,
     sdpa_gqa_mode: str = "auto",
@@ -670,6 +684,9 @@ def replace_bert_self_attention(
                 qk_base_dim=qk_base_dim,
                 value_head_dim=value_head_dim,
                 generator_mixing=generator_mixing,
+                theta_init=theta_init,
+                theta_init_scale=theta_init_scale,
+                generator_init_scale=generator_init_scale,
                 use_sdpa=use_sdpa,
                 fuse_base_qkv=fuse_base_qkv,
                 sdpa_gqa_mode=sdpa_gqa_mode,
@@ -729,6 +746,9 @@ def load_bert_masked_lm(
     qk_base_dim: int | None = None,
     value_head_dim: int | None = None,
     generator_mixing: str = "softmax",
+    theta_init: str = "balanced_simplex",
+    theta_init_scale: float = 4.0,
+    generator_init_scale: float = 0.02,
     use_sdpa: bool = False,
     fuse_base_qkv: bool = False,
     sdpa_gqa_mode: str = "auto",
@@ -755,6 +775,11 @@ def load_bert_masked_lm(
         qk_base_dim = manifest.get("qk_base_dim", qk_base_dim)
         value_head_dim = manifest.get("value_head_dim", value_head_dim)
         generator_mixing = manifest.get("generator_mixing", "softmax")
+        theta_init = manifest.get("theta_init", theta_init)
+        theta_init_scale = float(manifest.get("theta_init_scale", theta_init_scale))
+        generator_init_scale = float(
+            manifest.get("generator_init_scale", generator_init_scale)
+        )
         use_sdpa = bool(manifest.get("use_sdpa", use_sdpa))
         fuse_base_qkv = bool(manifest.get("fuse_base_qkv", fuse_base_qkv))
         sdpa_gqa_mode = manifest.get("sdpa_gqa_mode", sdpa_gqa_mode)
@@ -772,6 +797,8 @@ def load_bert_masked_lm(
             num_base_heads=int(num_base_heads),
             num_generators=int(num_generators), qk_base_dim=qk_base_dim,
             value_head_dim=value_head_dim, generator_mixing=generator_mixing,
+            theta_init=theta_init, theta_init_scale=theta_init_scale,
+            generator_init_scale=generator_init_scale,
             use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
             sdpa_gqa_mode=sdpa_gqa_mode,
             initialize_from_mha=False,
@@ -801,6 +828,8 @@ def load_bert_masked_lm(
         num_base_heads=num_base_heads,
         num_generators=num_generators, qk_base_dim=qk_base_dim,
         value_head_dim=value_head_dim, generator_mixing=generator_mixing,
+        theta_init=theta_init, theta_init_scale=theta_init_scale,
+        generator_init_scale=generator_init_scale,
         use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
         sdpa_gqa_mode=sdpa_gqa_mode,
         initialize_from_mha=initialization == "checkpoint",
@@ -819,6 +848,9 @@ def load_bert_sequence_classifier(
     qk_base_dim: int | None = None,
     value_head_dim: int | None = None,
     generator_mixing: str = "softmax",
+    theta_init: str = "balanced_simplex",
+    theta_init_scale: float = 4.0,
+    generator_init_scale: float = 0.02,
     use_sdpa: bool = False,
     fuse_base_qkv: bool = False,
     sdpa_gqa_mode: str = "auto",
@@ -842,6 +874,11 @@ def load_bert_sequence_classifier(
         qk_base_dim = manifest.get("qk_base_dim", qk_base_dim)
         value_head_dim = manifest.get("value_head_dim", value_head_dim)
         generator_mixing = manifest.get("generator_mixing", generator_mixing)
+        theta_init = manifest.get("theta_init", theta_init)
+        theta_init_scale = float(manifest.get("theta_init_scale", theta_init_scale))
+        generator_init_scale = float(
+            manifest.get("generator_init_scale", generator_init_scale)
+        )
         use_sdpa = bool(manifest.get("use_sdpa", use_sdpa))
         fuse_base_qkv = bool(manifest.get("fuse_base_qkv", fuse_base_qkv))
         sdpa_gqa_mode = manifest.get("sdpa_gqa_mode", sdpa_gqa_mode)
@@ -857,6 +894,9 @@ def load_bert_sequence_classifier(
             qk_base_dim=qk_base_dim,
             value_head_dim=value_head_dim,
             generator_mixing=generator_mixing,
+            theta_init=theta_init,
+            theta_init_scale=theta_init_scale,
+            generator_init_scale=generator_init_scale,
             use_sdpa=use_sdpa,
             fuse_base_qkv=fuse_base_qkv,
             sdpa_gqa_mode=sdpa_gqa_mode,
@@ -880,6 +920,9 @@ def load_bert_sequence_classifier(
             qk_base_dim=qk_base_dim,
             value_head_dim=value_head_dim,
             generator_mixing=generator_mixing,
+            theta_init=theta_init,
+            theta_init_scale=theta_init_scale,
+            generator_init_scale=generator_init_scale,
             use_sdpa=use_sdpa,
             fuse_base_qkv=fuse_base_qkv,
             sdpa_gqa_mode=sdpa_gqa_mode,
@@ -905,6 +948,8 @@ def load_bert_sequence_classifier(
         num_base_heads=num_base_heads,
         num_generators=num_generators, qk_base_dim=qk_base_dim,
         value_head_dim=value_head_dim, generator_mixing=generator_mixing,
+        theta_init=theta_init, theta_init_scale=theta_init_scale,
+        generator_init_scale=generator_init_scale,
         use_sdpa=use_sdpa, fuse_base_qkv=fuse_base_qkv,
         sdpa_gqa_mode=sdpa_gqa_mode,
         initialize_from_mha=True,

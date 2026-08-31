@@ -59,7 +59,7 @@ class LieGeneratedMetricAttention(nn.Module):
         stabilize_generators: bool = True,
         normalize_generators: bool = False,
         head_generator_symmetric_cap: float | None = None,
-        theta_init_scale: float = 0.02,
+        theta_init_scale: float = 4.0,
         generator_init_scale: float = 0.02,
         base_dim: int | None = None,
         value_dim: int | None = None,
@@ -68,7 +68,7 @@ class LieGeneratedMetricAttention(nn.Module):
         metric_clip_min: float | None = None,
         metric_clip_max: float | None = None,
         value_beta: float | None = None,
-        theta_init: str = "random_sphere",
+        theta_init: str = "balanced_simplex",
         logit_scale_mode: str = "sqrt_dim",
         learn_head_temperature: bool = False,
         value_transform: str = "none",
@@ -86,7 +86,7 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError(f"unsupported generator_mixing: {generator_mixing}")
         if metric_mode not in {"exp", "residual", "quadratic", "unconstrained"}:
             raise ValueError(f"unsupported metric_mode: {metric_mode}")
-        if theta_init not in {"random_sphere", "circle"}:
+        if theta_init not in {"balanced_simplex", "random_sphere", "circle"}:
             raise ValueError(f"unsupported theta_init: {theta_init}")
         if logit_scale_mode not in {"sqrt_dim", "rms_metric"}:
             raise ValueError(f"unsupported logit_scale_mode: {logit_scale_mode}")
@@ -237,7 +237,32 @@ class LieGeneratedMetricAttention(nn.Module):
             return
 
         with torch.no_grad():
-            if self.theta_init == "circle" and self.num_generators >= 2:
+            if self.theta_init == "balanced_simplex":
+                if self.num_generators == 1:
+                    # There is no head-diversity degree of freedom with one
+                    # generator. Keep the sole coefficient nonzero for raw
+                    # mixing; softmax mixing maps it to one regardless.
+                    directions = torch.ones_like(coordinates)
+                else:
+                    # Vertices of the centered regular simplex maximize the
+                    # pairwise distance between generator-mixture logits.
+                    # Cycling through vertices keeps their occupancy balanced
+                    # and guarantees distinct heads within each base whenever
+                    # generated_heads_per_base <= num_generators.
+                    assignments = torch.arange(
+                        self.num_heads,
+                        device=coordinates.device,
+                    ).remainder(self.num_generators)
+                    directions = torch.full_like(
+                        coordinates,
+                        -1.0 / self.num_generators,
+                    )
+                    directions.scatter_(
+                        1,
+                        assignments[:, None],
+                        1.0 - 1.0 / self.num_generators,
+                    )
+            elif self.theta_init == "circle" and self.num_generators >= 2:
                 head_ids = torch.arange(
                     self.num_heads,
                     device=coordinates.device,
