@@ -22,3 +22,8 @@ codex-**
 
 # OSPool job secret; create only on the AP40 access point.
 ospool/.wandb_api_key
+
+iclr2026_conference.tex
+official_glue_submissions/
+.venv/
+experiments/
