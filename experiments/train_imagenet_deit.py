@@ -60,6 +60,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-learning-rate", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument(
+        "--no-decay-gt-generators",
+        action="store_true",
+        help=(
+            "Exclude GT-MHA generators and value_generators from AdamW weight "
+            "decay. Head coordinates remain no-decay in all configurations."
+        ),
+    )
+    parser.add_argument(
         "--max-gradient-norm",
         type=float,
         help="Optionally clip the global gradient norm; norms are logged regardless.",
@@ -160,17 +168,28 @@ def model_config(args: argparse.Namespace) -> DeiTConfig:
     )
 
 
-def optimizer_groups(model: nn.Module, weight_decay: float) -> list[dict[str, object]]:
+def optimizer_groups(
+    model: nn.Module,
+    weight_decay: float,
+    *,
+    no_decay_gt_generators: bool = False,
+) -> list[dict[str, object]]:
     no_decay_names = set(getattr(model, "no_weight_decay", lambda: set())())
+    gt_generator_names = {"generators", "value_generators"}
     decay: list[nn.Parameter] = []
     no_decay: list[nn.Parameter] = []
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
             continue
+        parameter_name = name.rsplit(".", 1)[-1]
         if (
             parameter.ndim <= 1
             or name in no_decay_names
             or name.endswith((".theta", ".value_theta", ".mixing_vector"))
+            or (
+                no_decay_gt_generators
+                and parameter_name in gt_generator_names
+            )
         ):
             no_decay.append(parameter)
         else:
@@ -547,7 +566,11 @@ def main() -> None:
     model.to(device)
     model_ema = ModelEmaV2(model, decay=args.model_ema_decay, device=None)
     optimizer = torch.optim.AdamW(
-        optimizer_groups(model, args.weight_decay),
+        optimizer_groups(
+            model,
+            args.weight_decay,
+            no_decay_gt_generators=args.no_decay_gt_generators,
+        ),
         lr=base_lr,
         betas=(0.9, 0.999),
         eps=1e-8,

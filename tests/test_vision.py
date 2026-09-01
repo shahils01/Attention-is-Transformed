@@ -138,3 +138,37 @@ def test_deit_rejects_wrong_image_size_at_runtime() -> None:
     model = DeiTClassifier(tiny_config("mha"))
     with pytest.raises(ValueError, match="expected 32x32"):
         model(torch.randn(1, 3, 24, 32))
+
+
+def test_gt_generator_no_decay_ablation_is_opt_in() -> None:
+    from experiments.train_imagenet_deit import optimizer_groups
+
+    model = DeiTClassifier(tiny_config("gt_mha_residual"))
+
+    default_groups = optimizer_groups(model, 0.05)
+    ablation_groups = optimizer_groups(
+        model,
+        0.05,
+        no_decay_gt_generators=True,
+    )
+    default_decay = {
+        id(parameter): group["weight_decay"]
+        for group in default_groups
+        for parameter in group["params"]
+    }
+    ablation_decay = {
+        id(parameter): group["weight_decay"]
+        for group in ablation_groups
+        for parameter in group["params"]
+    }
+
+    attention = model.blocks[0].attn
+    assert default_decay[id(attention.generators)] == 0.05
+    assert default_decay[id(attention.value_generators)] == 0.05
+    assert ablation_decay[id(attention.generators)] == 0.0
+    assert ablation_decay[id(attention.value_generators)] == 0.0
+    assert ablation_decay[id(attention.theta)] == 0.0
+    assert ablation_decay[id(attention.value_theta)] == 0.0
+    assert ablation_decay[id(attention.q_proj.weight)] == 0.05
+    assert ablation_decay[id(attention.k_proj.weight)] == 0.05
+    assert ablation_decay[id(attention.v_proj.weight)] == 0.05

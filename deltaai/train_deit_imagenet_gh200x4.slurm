@@ -34,6 +34,7 @@ WANDB_MODE=${WANDB_MODE:-online}
 MAX_GRADIENT_NORM=${MAX_GRADIENT_NORM:-}
 RUN_SUFFIX=${RUN_SUFFIX:-}
 MINIMUM_FINAL_TOP1=${MINIMUM_FINAL_TOP1:-}
+NO_DECAY_GT_GENERATORS=${NO_DECAY_GT_GENERATORS:-0}
 
 RUN_NAME=deit_b16_${ATTENTION_TYPE}_seed${SEED}
 if [[ "${ATTENTION_TYPE}" == "gt_mha_"* ]]; then
@@ -72,6 +73,11 @@ if [[ -n "${MINIMUM_FINAL_TOP1}" ]]; then
   SMOKE_GUARD_ARGS=(--minimum-final-top1 "${MINIMUM_FINAL_TOP1}")
 fi
 
+GENERATOR_DECAY_ARGS=()
+if [[ "${NO_DECAY_GT_GENERATORS}" == "1" ]]; then
+  GENERATOR_DECAY_ARGS=(--no-decay-gt-generators)
+fi
+
 python -m torch.distributed.run --standalone --nproc_per_node=4 \
   experiments/train_imagenet_deit.py \
   --data-dir "${DATA_DIR}" \
@@ -90,6 +96,7 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
   --seed "${SEED}" \
   --wandb-mode "${WANDB_MODE}" \
   --wandb-run-name "${RUN_NAME}" \
+  "${GENERATOR_DECAY_ARGS[@]}" \
   "${GRADIENT_ARGS[@]}" \
   "${SMOKE_GUARD_ARGS[@]}" \
   "${RESUME_ARGS[@]}"
