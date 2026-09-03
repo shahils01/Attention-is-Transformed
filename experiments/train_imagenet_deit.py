@@ -60,6 +60,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-learning-rate", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument(
+        "--gt-generator-weight-decay",
+        type=float,
+        help=(
+            "Optional AdamW weight decay applied only to GT-MHA generators and "
+            "value_generators. By default they use --weight-decay. Head "
+            "coordinates always remain no-decay."
+        ),
+    )
+    parser.add_argument(
         "--no-decay-gt-generators",
         action="store_true",
         help=(
@@ -173,11 +182,22 @@ def optimizer_groups(
     weight_decay: float,
     *,
     no_decay_gt_generators: bool = False,
+    gt_generator_weight_decay: float | None = None,
 ) -> list[dict[str, object]]:
+    if no_decay_gt_generators and gt_generator_weight_decay is not None:
+        raise ValueError(
+            "--no-decay-gt-generators and --gt-generator-weight-decay are mutually exclusive"
+        )
+    if gt_generator_weight_decay is not None and gt_generator_weight_decay < 0:
+        raise ValueError("gt_generator_weight_decay must be non-negative")
+    if no_decay_gt_generators:
+        gt_generator_weight_decay = 0.0
+
     no_decay_names = set(getattr(model, "no_weight_decay", lambda: set())())
     gt_generator_names = {"generators", "value_generators"}
     decay: list[nn.Parameter] = []
     no_decay: list[nn.Parameter] = []
+    gt_generator_decay: list[nn.Parameter] = []
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
             continue
@@ -186,18 +206,27 @@ def optimizer_groups(
             parameter.ndim <= 1
             or name in no_decay_names
             or name.endswith((".theta", ".value_theta", ".mixing_vector"))
-            or (
-                no_decay_gt_generators
-                and parameter_name in gt_generator_names
-            )
         ):
             no_decay.append(parameter)
+        elif (
+            gt_generator_weight_decay is not None
+            and parameter_name in gt_generator_names
+        ):
+            gt_generator_decay.append(parameter)
         else:
             decay.append(parameter)
-    return [
+    groups: list[dict[str, object]] = [
         {"params": decay, "weight_decay": weight_decay},
         {"params": no_decay, "weight_decay": 0.0},
     ]
+    if gt_generator_decay:
+        groups.append(
+            {
+                "params": gt_generator_decay,
+                "weight_decay": gt_generator_weight_decay,
+            }
+        )
+    return groups
 
 
 def _wds_split(data_dir: Path, split: str) -> tuple[str, int]:
@@ -570,6 +599,7 @@ def main() -> None:
             model,
             args.weight_decay,
             no_decay_gt_generators=args.no_decay_gt_generators,
+            gt_generator_weight_decay=args.gt_generator_weight_decay,
         ),
         lr=base_lr,
         betas=(0.9, 0.999),

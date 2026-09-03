@@ -151,6 +151,11 @@ def test_gt_generator_no_decay_ablation_is_opt_in() -> None:
         0.05,
         no_decay_gt_generators=True,
     )
+    partial_decay_groups = optimizer_groups(
+        model,
+        0.05,
+        gt_generator_weight_decay=0.01,
+    )
     default_decay = {
         id(parameter): group["weight_decay"]
         for group in default_groups
@@ -161,6 +166,11 @@ def test_gt_generator_no_decay_ablation_is_opt_in() -> None:
         for group in ablation_groups
         for parameter in group["params"]
     }
+    partial_decay = {
+        id(parameter): group["weight_decay"]
+        for group in partial_decay_groups
+        for parameter in group["params"]
+    }
 
     attention = model.blocks[0].attn
     assert default_decay[id(attention.generators)] == 0.05
@@ -168,6 +178,10 @@ def test_gt_generator_no_decay_ablation_is_opt_in() -> None:
     assert ablation_decay[id(attention.generators)] == 0.0
     assert ablation_decay[id(attention.value_generators)] == 0.0
     assert ablation_decay[id(attention.theta)] == 0.0
+    assert partial_decay[id(attention.generators)] == 0.01
+    assert partial_decay[id(attention.value_generators)] == 0.01
+    assert partial_decay[id(attention.theta)] == 0.0
+    assert partial_decay[id(attention.q_proj.weight)] == 0.05
     assert ablation_decay[id(attention.value_theta)] == 0.0
     assert ablation_decay[id(attention.q_proj.weight)] == 0.05
     assert ablation_decay[id(attention.k_proj.weight)] == 0.05
