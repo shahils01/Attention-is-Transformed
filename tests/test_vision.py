@@ -140,6 +140,8 @@ def test_deit_gt_mha_supports_six_value_bases() -> None:
         **config.__dict__,
         "num_heads": 12,
         "embed_dim": 48,
+        "reduced_qk_dim": 24,
+        "collaborative_qk_dim": 24,
         "num_base_heads": 4,
         "num_value_base_heads": 6,
     })
