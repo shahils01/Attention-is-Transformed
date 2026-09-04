@@ -186,6 +186,32 @@ def test_bert_gt_mha_value_lie_transform_participates_in_backward() -> None:
         assert torch.isfinite(gradient).all()
 
 
+def test_bert_gt_mha_identity_fixes_scores_but_trains_value_transform() -> None:
+    torch.manual_seed(0)
+    module = BertGtMhaSelfAttention(
+        BertGtMhaConfig(
+            hidden_size=96,
+            num_attention_heads=12,
+            attention_probs_dropout_prob=0.0,
+            attention_type="gt_mha_identity",
+        )
+    )
+
+    metrics = module.gt_attention.compute_metrics()
+    expected = torch.eye(8).expand(12, 8, 8)
+    assert torch.equal(metrics, expected)
+    assert not hasattr(module.gt_attention, "generators")
+    assert not hasattr(module.gt_attention, "theta")
+
+    hidden = torch.randn(2, 5, 96)
+    context = module(hidden, attention_mask=torch.ones(2, 5))[0]
+    context.square().mean().backward()
+    for parameter_name in ("value_generators", "value_theta"):
+        gradient = getattr(module.gt_attention, parameter_name).grad
+        assert gradient is not None
+        assert torch.isfinite(gradient).all()
+
+
 def test_bert_optimized_sdpa_fused_qkv_matches_reference_forward_and_backward() -> None:
     torch.manual_seed(3)
     common = {

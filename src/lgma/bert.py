@@ -14,9 +14,11 @@ from lgma.transformer import validate_paper_gt_mha_module
 
 BertAttentionType = Literal[
     "mha", "mqa", "gqa", "collaborative",
-    "gt_mha_exact", "gt_mha_residual", "gt_mha_quadratic",
+    "gt_mha_identity", "gt_mha_exact", "gt_mha_residual", "gt_mha_quadratic",
 ]
-GT_MHA_BERT_ATTENTION_TYPES = {"gt_mha_exact", "gt_mha_residual", "gt_mha_quadratic"}
+GT_MHA_BERT_ATTENTION_TYPES = {
+    "gt_mha_identity", "gt_mha_exact", "gt_mha_residual", "gt_mha_quadratic"
+}
 BERT_ATTENTION_TYPES = {"mha", "mqa", "gqa", "collaborative", *GT_MHA_BERT_ATTENTION_TYPES}
 HEAD_COORDINATE_PARAMETER_NAMES = {"theta", "value_theta", "mixing_vector"}
 
@@ -364,6 +366,7 @@ class BertGtMhaSelfAttention(nn.Module):
         self.attention_head_size = config.hidden_size // config.num_attention_heads
         self.all_head_size = config.hidden_size
         mode = {
+            "gt_mha_identity": "identity",
             "gt_mha_exact": "exp",
             "gt_mha_residual": "residual",
             "gt_mha_quadratic": "quadratic",
@@ -387,7 +390,10 @@ class BertGtMhaSelfAttention(nn.Module):
             theta_init="random_sphere",
             logit_scale_mode="sqrt_dim",
             learn_head_temperature=False,
-            value_transform="lie",
+            # The identity ablation removes only head-specific scoring
+            # transformations; the value pathway remains the residual GT-MHA
+            # pathway so that this is a one-component-at-a-time control.
+            value_transform="lie_residual" if mode == "identity" else "lie",
             num_base_heads=config.num_base_heads,
             fuse_base_qkv=config.fuse_base_qkv,
             sdpa_gqa_mode=config.sdpa_gqa_mode,
