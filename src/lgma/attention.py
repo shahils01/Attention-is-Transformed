@@ -73,6 +73,7 @@ class LieGeneratedMetricAttention(nn.Module):
         learn_head_temperature: bool = False,
         value_transform: str = "none",
         num_base_heads: int = 1,
+        num_value_base_heads: int | None = None,
         fuse_base_qkv: bool = False,
         fold_value_transform_into_output: bool = False,
         sdpa_gqa_mode: str = "auto",
@@ -120,6 +121,12 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError("num_base_heads must be positive")
         if num_heads % num_base_heads != 0:
             raise ValueError("num_heads must be divisible by num_base_heads")
+        if num_value_base_heads is None:
+            num_value_base_heads = num_base_heads
+        if num_value_base_heads <= 0:
+            raise ValueError("num_value_base_heads must be positive")
+        if num_heads % num_value_base_heads != 0:
+            raise ValueError("num_heads must be divisible by num_value_base_heads")
         if sdpa_gqa_mode not in {"auto", "native", "expand"}:
             raise ValueError("sdpa_gqa_mode must be one of: auto, native, expand")
 
@@ -127,6 +134,8 @@ class LieGeneratedMetricAttention(nn.Module):
         self.num_heads = num_heads
         self.num_base_heads = num_base_heads
         self.generated_heads_per_base = num_heads // num_base_heads
+        self.num_value_base_heads = num_value_base_heads
+        self.generated_value_heads_per_base = num_heads // num_value_base_heads
         self.head_dim = head_dim
         self.base_dim = base_dim if base_dim is not None else head_dim
         self.value_dim = value_dim if value_dim is not None else head_dim
@@ -159,7 +168,9 @@ class LieGeneratedMetricAttention(nn.Module):
 
         self.q_proj = nn.Linear(d_model, self.num_base_heads * self.base_dim, bias=bias)
         self.k_proj = nn.Linear(d_model, self.num_base_heads * self.base_dim, bias=bias)
-        self.v_proj = nn.Linear(d_model, self.num_base_heads * self.value_dim, bias=bias)
+        self.v_proj = nn.Linear(
+            d_model, self.num_value_base_heads * self.value_dim, bias=bias
+        )
         self.out_proj = nn.Linear(num_heads * self.value_dim, d_model, bias=bias)
         self.attn_dropout = nn.Dropout(dropout)
 
@@ -543,7 +554,7 @@ class LieGeneratedMetricAttention(nn.Module):
                 )
             qkv = F.linear(x, weight, bias)
             qk_width = self.num_base_heads * self.base_dim
-            value_width = self.num_base_heads * self.value_dim
+            value_width = self.num_value_base_heads * self.value_dim
             return torch.split(qkv, (qk_width, qk_width, value_width), dim=-1)
         key_value = x if context is None else context
         return self.q_proj(x), self.k_proj(key_value), self.v_proj(key_value)
@@ -554,7 +565,9 @@ class LieGeneratedMetricAttention(nn.Module):
 
     def _reshape_base_values(self, tensor: torch.Tensor) -> torch.Tensor:
         batch, seq_len, _ = tensor.shape
-        return tensor.view(batch, seq_len, self.num_base_heads, self.value_dim).transpose(1, 2)
+        return tensor.view(
+            batch, seq_len, self.num_value_base_heads, self.value_dim
+        ).transpose(1, 2)
 
     def _metrics_by_base(self, metrics: torch.Tensor | None = None) -> torch.Tensor:
         if metrics is None:
@@ -645,8 +658,8 @@ class LieGeneratedMetricAttention(nn.Module):
         batch, _, seq_len, _ = values.shape
         values = values[:, :, None, :, :].expand(
             batch,
-            self.num_base_heads,
-            self.generated_heads_per_base,
+            self.num_value_base_heads,
+            self.generated_value_heads_per_base,
             seq_len,
             self.value_dim,
         )
@@ -657,8 +670,8 @@ class LieGeneratedMetricAttention(nn.Module):
         batch, _, seq_len, _ = values.shape
         values = values.reshape(
             batch,
-            self.num_base_heads,
-            self.generated_heads_per_base,
+            self.num_value_base_heads,
+            self.generated_value_heads_per_base,
             seq_len,
             self.value_dim,
         )
@@ -676,15 +689,15 @@ class LieGeneratedMetricAttention(nn.Module):
             else:
                 scale = torch.exp(diagonal)
             scale = scale.view(
-                self.num_base_heads,
-                self.generated_heads_per_base,
+                self.num_value_base_heads,
+                self.generated_value_heads_per_base,
                 self.value_dim,
             )
             values = values * scale[None, :, :, None, :]
         elif self.value_transform_mode in {"exp", "residual", "quadratic", "unconstrained"}:
             transforms = self.compute_value_transforms().view(
-                self.num_base_heads,
-                self.generated_heads_per_base,
+                self.num_value_base_heads,
+                self.generated_value_heads_per_base,
                 self.value_dim,
                 self.value_dim,
             )
@@ -867,7 +880,10 @@ class LieGeneratedMetricAttention(nn.Module):
             return out_heads
 
         dropout_p = self.dropout if self.training else 0.0
-        if self.num_heads == self.num_base_heads:
+        if (
+            self.num_heads == self.num_base_heads
+            and self.num_heads == self.num_value_base_heads
+        ):
             out_heads = F.scaled_dot_product_attention(
                 q_metric,
                 k_base,
@@ -877,7 +893,10 @@ class LieGeneratedMetricAttention(nn.Module):
                 is_causal=is_causal,
                 scale=sdpa_scale,
             )
-        elif self.sdpa_gqa_mode == "expand":
+        elif (
+            self.sdpa_gqa_mode == "expand"
+            or self.num_base_heads != self.num_value_base_heads
+        ):
             out_heads = F.scaled_dot_product_attention(
                 q_metric,
                 self._expand_keys(k_base),

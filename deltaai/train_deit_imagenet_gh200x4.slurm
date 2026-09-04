@@ -23,6 +23,7 @@ DATA_DIR=${DATA_DIR:-/work/nvme/biad/sshaik4/lgma_data/imagenet_wds_official}
 RUNS_DIR=${RUNS_DIR:-/work/hdd/biad/sshaik4/lgma_runs/imagenet}
 ATTENTION_TYPE=${ATTENTION_TYPE:-gt_mha_residual}
 NUM_BASE_HEADS=${NUM_BASE_HEADS:-4}
+NUM_VALUE_BASE_HEADS=${NUM_VALUE_BASE_HEADS:-${NUM_BASE_HEADS}}
 NUM_GENERATORS=${NUM_GENERATORS:-8}
 NUM_KV_HEADS=${NUM_KV_HEADS:-4}
 REDUCED_QK_DIM=${REDUCED_QK_DIM:-384}
@@ -35,10 +36,11 @@ MAX_GRADIENT_NORM=${MAX_GRADIENT_NORM:-}
 RUN_SUFFIX=${RUN_SUFFIX:-}
 MINIMUM_FINAL_TOP1=${MINIMUM_FINAL_TOP1:-}
 NO_DECAY_GT_GENERATORS=${NO_DECAY_GT_GENERATORS:-0}
+GT_GENERATOR_WEIGHT_DECAY=${GT_GENERATOR_WEIGHT_DECAY:-}
 
 RUN_NAME=deit_b16_${ATTENTION_TYPE}_seed${SEED}
 if [[ "${ATTENTION_TYPE}" == "gt_mha_"* ]]; then
-  RUN_NAME=${RUN_NAME}_b${NUM_BASE_HEADS}g${NUM_GENERATORS}
+  RUN_NAME=${RUN_NAME}_qkb${NUM_BASE_HEADS}vb${NUM_VALUE_BASE_HEADS}g${NUM_GENERATORS}
 fi
 if [[ -n "${RUN_SUFFIX}" ]]; then
   RUN_NAME=${RUN_NAME}_${RUN_SUFFIX}
@@ -76,6 +78,8 @@ fi
 GENERATOR_DECAY_ARGS=()
 if [[ "${NO_DECAY_GT_GENERATORS}" == "1" ]]; then
   GENERATOR_DECAY_ARGS=(--no-decay-gt-generators)
+elif [[ -n "${GT_GENERATOR_WEIGHT_DECAY}" ]]; then
+  GENERATOR_DECAY_ARGS=(--gt-generator-weight-decay "${GT_GENERATOR_WEIGHT_DECAY}")
 fi
 
 python -m torch.distributed.run --standalone --nproc_per_node=4 \
@@ -88,6 +92,7 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
   --collaborative-qk-dim "${COLLABORATIVE_QK_DIM}" \
   --num-kv-heads "${NUM_KV_HEADS}" \
   --num-base-heads "${NUM_BASE_HEADS}" \
+  --num-value-base-heads "${NUM_VALUE_BASE_HEADS}" \
   --num-generators "${NUM_GENERATORS}" \
   --epochs "${EPOCHS}" \
   --batch-size "${BATCH_SIZE}" \

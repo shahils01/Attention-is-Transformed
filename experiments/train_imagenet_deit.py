@@ -41,6 +41,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--collaborative-qk-dim", type=int, default=384)
     parser.add_argument("--num-kv-heads", type=int, default=4)
     parser.add_argument("--num-base-heads", type=int, default=4)
+    parser.add_argument(
+        "--num-value-base-heads",
+        type=int,
+        help="Independent number of shared V projections; defaults to --num-base-heads.",
+    )
     parser.add_argument("--num-generators", type=int, default=8)
     parser.add_argument("--generator-mixing", choices=("softmax", "none"), default="softmax")
     parser.add_argument(
@@ -168,6 +173,7 @@ def model_config(args: argparse.Namespace) -> DeiTConfig:
         collaborative_qk_dim=args.collaborative_qk_dim,
         num_kv_heads=args.num_kv_heads,
         num_base_heads=args.num_base_heads,
+        num_value_base_heads=args.num_value_base_heads,
         num_generators=args.num_generators,
         generator_mixing=args.generator_mixing,
         theta_init=args.theta_init,

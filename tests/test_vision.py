@@ -134,6 +134,22 @@ def test_deit_rejects_invalid_attention_counts() -> None:
         DeiTConfig(num_base_heads=0)
 
 
+def test_deit_gt_mha_supports_six_value_bases() -> None:
+    config = tiny_config("gt_mha_residual")
+    config = DeiTConfig(**{
+        **config.__dict__,
+        "num_heads": 12,
+        "embed_dim": 48,
+        "num_base_heads": 4,
+        "num_value_base_heads": 6,
+    })
+    model = DeiTClassifier(config)
+    attention = model.blocks[0].attn
+    assert attention.num_base_heads == 4
+    assert attention.num_value_base_heads == 6
+    assert model(torch.randn(2, 3, 32, 32)).shape == (2, 10)
+
+
 def test_deit_rejects_wrong_image_size_at_runtime() -> None:
     model = DeiTClassifier(tiny_config("mha"))
     with pytest.raises(ValueError, match="expected 32x32"):

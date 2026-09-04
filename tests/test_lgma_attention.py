@@ -145,6 +145,32 @@ def test_lgma_multibase_requires_heads_divisible_by_bases():
         raise AssertionError("expected ValueError")
 
 
+def test_lgma_supports_independent_qk_and_value_base_counts():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        48,
+        num_heads=12,
+        head_dim=4,
+        num_generators=8,
+        num_base_heads=4,
+        num_value_base_heads=6,
+        value_transform="lie_residual",
+        metric_mode="residual",
+        fuse_base_qkv=True,
+        use_sdpa=True,
+    )
+    assert layer.generated_heads_per_base == 3
+    assert layer.generated_value_heads_per_base == 2
+    assert layer.q_proj.out_features == 16
+    assert layer.k_proj.out_features == 16
+    assert layer.v_proj.out_features == 24
+    x = torch.randn(2, 5, 48, requires_grad=True)
+    y = layer(x)
+    assert y.shape == x.shape
+    y.square().mean().backward()
+    assert layer.v_proj.weight.grad is not None
+
+
 def test_generator_mixing_softmax_default_and_none_are_configurable():
     softmax_layer = LieGeneratedMetricAttention(
         16,

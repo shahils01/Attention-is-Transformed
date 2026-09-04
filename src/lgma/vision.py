@@ -58,6 +58,7 @@ class DeiTConfig:
     collaborative_qk_dim: int = 384
     num_kv_heads: int = 4
     num_base_heads: int = 4
+    num_value_base_heads: int | None = None
     num_generators: int = 8
     generator_mixing: str = "softmax"
     theta_init: str = "balanced_simplex"
@@ -95,6 +96,11 @@ class DeiTConfig:
             raise ValueError("num_heads must be divisible by num_kv_heads")
         if self.num_heads % self.num_base_heads:
             raise ValueError("num_heads must be divisible by num_base_heads")
+        if self.num_value_base_heads is not None:
+            if self.num_value_base_heads <= 0:
+                raise ValueError("num_value_base_heads must be positive")
+            if self.num_heads % self.num_value_base_heads:
+                raise ValueError("num_heads must be divisible by num_value_base_heads")
         if self.theta_init not in {"balanced_simplex", "random_sphere", "circle"}:
             raise ValueError(f"unsupported theta_init: {self.theta_init}")
         if self.theta_init_scale < 0 or self.generator_init_scale <= 0:
@@ -221,12 +227,14 @@ def build_vision_attention(config: DeiTConfig) -> nn.Module:
         learn_head_temperature=False,
         value_transform="lie",
         num_base_heads=config.num_base_heads,
+        num_value_base_heads=config.num_value_base_heads,
         fuse_base_qkv=config.fuse_base_qkv,
         fold_value_transform_into_output=config.fold_value_transform_into_output,
         sdpa_gqa_mode=config.sdpa_gqa_mode,
     )
     if (
         config.num_base_heads == 4
+        and config.num_value_base_heads in (None, config.num_base_heads)
         and config.num_generators == 8
         and config.generator_mixing == "softmax"
     ):
