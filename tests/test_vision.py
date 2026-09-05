@@ -199,6 +199,21 @@ def test_gt_generator_no_decay_ablation_is_opt_in() -> None:
     assert partial_decay[id(attention.generators)] == 0.01
     assert partial_decay[id(attention.value_generators)] == 0.01
     assert partial_decay[id(attention.theta)] == 0.0
+
+
+def test_value_diversity_loss_only_updates_value_transform_parameters() -> None:
+    from experiments.train_imagenet_deit import value_transform_cosine_diversity_loss
+
+    model = DeiTClassifier(tiny_config("gt_mha_residual"))
+    loss = value_transform_cosine_diversity_loss(model)
+    assert loss.ndim == 0
+    assert loss >= 0
+    loss.backward()
+    attention = model.blocks[0].attn
+    assert attention.value_theta.grad is not None
+    assert attention.value_generators.grad is not None
+    assert attention.theta.grad is None
+    assert attention.generators.grad is None
     assert partial_decay[id(attention.q_proj.weight)] == 0.05
     assert ablation_decay[id(attention.value_theta)] == 0.0
     assert ablation_decay[id(attention.q_proj.weight)] == 0.05

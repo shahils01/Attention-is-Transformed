@@ -171,6 +171,25 @@ def test_lgma_supports_independent_qk_and_value_base_counts():
     assert layer.v_proj.weight.grad is not None
 
 
+def test_value_head_generator_helper_preserves_gradients():
+    layer = LieGeneratedMetricAttention(
+        32,
+        num_heads=4,
+        head_dim=8,
+        num_generators=3,
+        num_base_heads=2,
+        value_transform="lie_residual",
+        metric_mode="residual",
+        use_sdpa=False,
+    )
+    elements = layer.compute_value_head_generators()
+    assert elements.shape == (4, 8, 8)
+    elements.square().mean().backward()
+    assert layer.value_theta.grad is not None
+    assert layer.value_generators.grad is not None
+    assert layer.theta.grad is None
+
+
 def test_generator_mixing_softmax_default_and_none_are_configurable():
     softmax_layer = LieGeneratedMetricAttention(
         16,

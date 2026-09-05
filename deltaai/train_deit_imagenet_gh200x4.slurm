@@ -37,6 +37,7 @@ RUN_SUFFIX=${RUN_SUFFIX:-}
 MINIMUM_FINAL_TOP1=${MINIMUM_FINAL_TOP1:-}
 NO_DECAY_GT_GENERATORS=${NO_DECAY_GT_GENERATORS:-0}
 GT_GENERATOR_WEIGHT_DECAY=${GT_GENERATOR_WEIGHT_DECAY:-}
+VALUE_DIVERSITY_WEIGHT=${VALUE_DIVERSITY_WEIGHT:-0}
 
 RUN_NAME=deit_b16_${ATTENTION_TYPE}_seed${SEED}
 if [[ "${ATTENTION_TYPE}" == "gt_mha_"* ]]; then
@@ -94,6 +95,7 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
   --num-base-heads "${NUM_BASE_HEADS}" \
   --num-value-base-heads "${NUM_VALUE_BASE_HEADS}" \
   --num-generators "${NUM_GENERATORS}" \
+  --value-diversity-weight "${VALUE_DIVERSITY_WEIGHT}" \
   --epochs "${EPOCHS}" \
   --batch-size "${BATCH_SIZE}" \
   --workers 12 \

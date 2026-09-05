@@ -22,6 +22,7 @@ DATA_DIR=${DATA_DIR:-/work/nvme/bifg/arai3/lgma_data/imagenet_wds_official}
 RUNS_DIR=${RUNS_DIR:-/work/hdd/bifg/arai3/lgma_runs/imagenet}
 ATTENTION_TYPE=${ATTENTION_TYPE:-gqa}
 NUM_BASE_HEADS=${NUM_BASE_HEADS:-4}
+NUM_VALUE_BASE_HEADS=${NUM_VALUE_BASE_HEADS:-${NUM_BASE_HEADS}}
 NUM_GENERATORS=${NUM_GENERATORS:-8}
 NUM_KV_HEADS=${NUM_KV_HEADS:-4}
 REDUCED_QK_DIM=${REDUCED_QK_DIM:-384}
@@ -33,10 +34,13 @@ WANDB_MODE=${WANDB_MODE:-online}
 MAX_GRADIENT_NORM=${MAX_GRADIENT_NORM:-}
 RUN_SUFFIX=${RUN_SUFFIX:-}
 MINIMUM_FINAL_TOP1=${MINIMUM_FINAL_TOP1:-}
+NO_DECAY_GT_GENERATORS=${NO_DECAY_GT_GENERATORS:-0}
+GT_GENERATOR_WEIGHT_DECAY=${GT_GENERATOR_WEIGHT_DECAY:-}
+VALUE_DIVERSITY_WEIGHT=${VALUE_DIVERSITY_WEIGHT:-0}
 
 RUN_NAME=deit_b16_${ATTENTION_TYPE}_seed${SEED}
 if [[ "${ATTENTION_TYPE}" == "gt_mha_"* ]]; then
-  RUN_NAME=${RUN_NAME}_b${NUM_BASE_HEADS}g${NUM_GENERATORS}
+  RUN_NAME=${RUN_NAME}_qkb${NUM_BASE_HEADS}vb${NUM_VALUE_BASE_HEADS}g${NUM_GENERATORS}
 fi
 if [[ -n "${RUN_SUFFIX}" ]]; then
   RUN_NAME=${RUN_NAME}_${RUN_SUFFIX}
@@ -71,6 +75,13 @@ if [[ -n "${MINIMUM_FINAL_TOP1}" ]]; then
   SMOKE_GUARD_ARGS=(--minimum-final-top1 "${MINIMUM_FINAL_TOP1}")
 fi
 
+GENERATOR_DECAY_ARGS=()
+if [[ "${NO_DECAY_GT_GENERATORS}" == "1" ]]; then
+  GENERATOR_DECAY_ARGS=(--no-decay-gt-generators)
+elif [[ -n "${GT_GENERATOR_WEIGHT_DECAY}" ]]; then
+  GENERATOR_DECAY_ARGS=(--gt-generator-weight-decay "${GT_GENERATOR_WEIGHT_DECAY}")
+fi
+
 python -m torch.distributed.run --standalone --nproc_per_node=4 \
   experiments/train_imagenet_deit.py \
   --data-dir "${DATA_DIR}" \
@@ -81,7 +92,9 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
   --collaborative-qk-dim "${COLLABORATIVE_QK_DIM}" \
   --num-kv-heads "${NUM_KV_HEADS}" \
   --num-base-heads "${NUM_BASE_HEADS}" \
+  --num-value-base-heads "${NUM_VALUE_BASE_HEADS}" \
   --num-generators "${NUM_GENERATORS}" \
+  --value-diversity-weight "${VALUE_DIVERSITY_WEIGHT}" \
   --epochs "${EPOCHS}" \
   --batch-size "${BATCH_SIZE}" \
   --workers 12 \
@@ -89,6 +102,7 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
   --seed "${SEED}" \
   --wandb-mode "${WANDB_MODE}" \
   --wandb-run-name "${RUN_NAME}" \
+  "${GENERATOR_DECAY_ARGS[@]}" \
   "${GRADIENT_ARGS[@]}" \
   "${SMOKE_GUARD_ARGS[@]}" \
   "${RESUME_ARGS[@]}"

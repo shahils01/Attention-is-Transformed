@@ -418,6 +418,35 @@ class LieGeneratedMetricAttention(nn.Module):
             raise AttributeError("value transform mode does not use value_theta")
         return self._generator_mixing_weights(self.value_theta)
 
+    def compute_value_head_generators(self) -> torch.Tensor:
+        """Return per-head value Lie-algebra elements before mapping to transforms."""
+        if self.value_transform_mode == "none":
+            return self.v_proj.weight.new_zeros(
+                self.num_heads, self.value_dim, self.value_dim
+            )
+        if self.value_transform_mode == "diag":
+            return torch.diag_embed(self.value_scale - 1.0)
+        if self.value_transform_mode == "unconstrained":
+            return self.value_beta * self.raw_value_transforms
+        if self.generator_type == "diagonal":
+            diagonal = torch.einsum(
+                "hm,md->hd",
+                self.value_theta_weights(),
+                self._maybe_normalize_generators(self.value_generators),
+            )
+            return torch.diag_embed(self.value_beta * diagonal)
+
+        generators = self._dense_value_generators()
+        head_generators = torch.einsum(
+            "hm,mde->hde", self.value_theta_weights(), generators
+        )
+        head_generators = self.value_beta * head_generators
+        if self.generator_type == "symmetric":
+            head_generators = 0.5 * (
+                head_generators + head_generators.transpose(-1, -2)
+            )
+        return head_generators
+
     def _generator_mixing_weights(self, coordinates: torch.Tensor) -> torch.Tensor:
         if self.generator_mixing == "softmax":
             return torch.softmax(coordinates, dim=-1)
@@ -512,11 +541,7 @@ class LieGeneratedMetricAttention(nn.Module):
             scale = torch.exp(diagonal)
             return torch.diag_embed(scale)
 
-        generators = self._dense_value_generators()
-        head_generators = torch.einsum("hm,mde->hde", self.value_theta_weights(), generators)
-        head_generators = self.value_beta * head_generators
-        if self.generator_type == "symmetric":
-            head_generators = 0.5 * (head_generators + head_generators.transpose(-1, -2))
+        head_generators = self.compute_value_head_generators()
         if self.value_transform_mode == "residual":
             eye = torch.eye(
                 self.value_dim,

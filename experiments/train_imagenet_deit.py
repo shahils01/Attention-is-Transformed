@@ -15,6 +15,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch import nn
+import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 
@@ -27,6 +28,7 @@ from lgma.vision import (
     DeiTClassifier,
     vision_parameter_counts,
 )
+from lgma.attention import LieGeneratedMetricAttention
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,6 +57,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--theta-init-scale", type=float, default=4.0)
     parser.add_argument("--generator-init-scale", type=float, default=0.02)
+    parser.add_argument(
+        "--value-diversity-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight for mean squared off-diagonal cosine similarity among "
+            "per-head value Lie-algebra elements. Zero disables it."
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=256, help="Per-device batch size")
     parser.add_argument("--workers", type=int, default=12)
@@ -456,6 +467,34 @@ def parameter_l2_norm(model: nn.Module) -> float:
     return 0.0 if squared is None else float(squared.sqrt())
 
 
+def value_transform_cosine_diversity_loss(
+    model: nn.Module,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Penalize aligned and anti-aligned value Lie-algebra elements by layer."""
+    penalties: list[torch.Tensor] = []
+    for module in unwrap_model(model).modules():
+        if not isinstance(module, LieGeneratedMetricAttention):
+            continue
+        if module.value_transform_mode == "none":
+            continue
+        head_elements = module.compute_value_head_generators().float()
+        vectors = F.normalize(head_elements.flatten(1), dim=-1, eps=eps)
+        similarities = vectors @ vectors.transpose(0, 1)
+        num_heads = similarities.shape[0]
+        if num_heads <= 1:
+            continue
+        off_diagonal = (
+            similarities.square().sum()
+            - similarities.diagonal().square().sum()
+        )
+        penalties.append(off_diagonal / (num_heads * (num_heads - 1)))
+    if penalties:
+        return torch.stack(penalties).mean()
+    parameter = next(unwrap_model(model).parameters())
+    return parameter.new_zeros((), dtype=torch.float32)
+
+
 def reduce_statistics(values: list[float], device: torch.device) -> list[float]:
     tensor = torch.tensor(values, dtype=torch.float64, device=device)
     if dist.is_initialized():
@@ -565,6 +604,8 @@ def main() -> None:
         raise SystemExit("--max-gradient-norm must be positive")
     if args.minimum_final_top1 is not None and args.minimum_final_top1 < 0:
         raise SystemExit("--minimum-final-top1 must be non-negative")
+    if args.value_diversity_weight < 0:
+        raise SystemExit("--value-diversity-weight must be non-negative")
     rank, local_rank, world_size, device = setup_distributed()
     seed_everything(args.seed, rank)
     config = model_config(args)
@@ -722,7 +763,15 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             with autocast_context(device, args.precision):
                 logits = model(images)
-                loss = criterion(logits, targets)
+                classification_loss = criterion(logits, targets)
+                if args.value_diversity_weight > 0:
+                    value_diversity_loss = value_transform_cosine_diversity_loss(model)
+                else:
+                    value_diversity_loss = classification_loss.new_zeros(())
+                weighted_value_diversity_loss = (
+                    args.value_diversity_weight * value_diversity_loss
+                )
+                loss = classification_loss + weighted_value_diversity_loss
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
                 if args.max_gradient_norm is not None or measure_diagnostics:
@@ -762,6 +811,11 @@ def main() -> None:
                     "epoch": epoch,
                     "step": global_step,
                     "train/loss": float(loss.detach()),
+                    "train/classification_loss": float(classification_loss.detach()),
+                    "train/value_diversity_loss": float(value_diversity_loss.detach()),
+                    "train/value_diversity_weighted_loss": float(
+                        weighted_value_diversity_loss.detach()
+                    ),
                     "train/epoch_loss_so_far": loss_sum / max(sample_count, 1),
                     "train/learning_rate": learning_rate,
                     "train/gradient_norm": gradient_norm,
