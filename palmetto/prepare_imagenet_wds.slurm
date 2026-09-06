@@ -12,6 +12,7 @@
 #SBATCH --output=/scratch/shahils/logs/%x_%j.out
 #SBATCH --error=/scratch/shahils/logs/%x_%j.err
 
+source /etc/profile
 set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-/scratch/shahils/Attention-is-Transformed-vision}
@@ -22,7 +23,6 @@ TRAIN_SHUFFLE_SEED=${TRAIN_SHUFFLE_SEED:-0}
 MAX_TRAIN_SAMPLES=${MAX_TRAIN_SAMPLES:-}
 MAX_VAL_SAMPLES=${MAX_VAL_SAMPLES:-}
 
-source /usr/share/lmod/lmod/init/bash
 module load anaconda3/2023.09-0
 export PYTHONNOUSERSITE=1
 

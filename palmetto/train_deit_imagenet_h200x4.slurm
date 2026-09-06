@@ -13,6 +13,7 @@
 #SBATCH --output=/scratch/shahils/logs/%x_%j.out
 #SBATCH --error=/scratch/shahils/logs/%x_%j.err
 
+source /etc/profile
 set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-/scratch/shahils/Attention-is-Transformed-vision}
@@ -52,7 +53,6 @@ if [[ -n "${RUN_SUFFIX}" ]]; then
 fi
 OUTPUT_DIR=${RUNS_DIR}/${RUN_NAME}
 
-source /usr/share/lmod/lmod/init/bash
 module load anaconda3/2023.09-0
 source "${ENV_DIR}/bin/activate"
 export PYTHONNOUSERSITE=1
