@@ -114,8 +114,13 @@ run_one() {
   local tag metric_name prefix run_name output_dir checkpoint resume_args=()
   tag=$(lr_tag "${learning_rate}")
   metric_name=$(task_metric "${task}")
-  prefix=${RUN_PREFIX}_${task}
-  run_name=${prefix}_${METHOD}_lr${tag}_seed${seed}_${stage}
+  if [[ "${task}" == wnli ]]; then
+    prefix=glue_official_wnli_fixed
+    run_name=${prefix}_${METHOD}_lr${tag}_seed${seed}
+  else
+    prefix=${RUN_PREFIX}_${task}
+    run_name=${prefix}_${METHOD}_lr${tag}_seed${seed}_${stage}
+  fi
   output_dir=${PROJECT_DIR}/lgma_runs/${run_name}
 
   if [[ -f "${output_dir}/eval_results.json" ]]; then
