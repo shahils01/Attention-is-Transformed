@@ -77,6 +77,7 @@ class LieGeneratedMetricAttention(nn.Module):
         fuse_base_qkv: bool = False,
         fold_value_transform_into_output: bool = False,
         sdpa_gqa_mode: str = "auto",
+        raw_mixing_init: str = "direct",
     ) -> None:
         super().__init__()
         if d_model <= 0 or num_heads <= 0 or head_dim <= 0 or num_generators <= 0:
@@ -85,6 +86,10 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError(f"unsupported generator_type: {generator_type}")
         if generator_mixing not in {"softmax", "none"}:
             raise ValueError(f"unsupported generator_mixing: {generator_mixing}")
+        if raw_mixing_init not in {"direct", "softmax_matched"}:
+            raise ValueError(f"unsupported raw_mixing_init: {raw_mixing_init}")
+        if raw_mixing_init == "softmax_matched" and generator_mixing != "none":
+            raise ValueError("softmax_matched raw initialization requires generator_mixing='none'")
         if metric_mode not in {"exp", "residual", "quadratic", "unconstrained"}:
             raise ValueError(f"unsupported metric_mode: {metric_mode}")
         if theta_init not in {"balanced_simplex", "random_sphere", "circle"}:
@@ -145,6 +150,7 @@ class LieGeneratedMetricAttention(nn.Module):
         self.dropout = dropout
         self.generator_type = generator_type
         self.generator_mixing = generator_mixing
+        self.raw_mixing_init = raw_mixing_init
         self.use_sdpa = use_sdpa
         self.causal = causal
         self.stabilize_generators = stabilize_generators
@@ -303,7 +309,10 @@ class LieGeneratedMetricAttention(nn.Module):
             else:
                 directions = torch.randn_like(coordinates)
             directions = directions / directions.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-            coordinates.copy_(directions * self.theta_init_scale)
+            initialized = directions * self.theta_init_scale
+            if self.raw_mixing_init == "softmax_matched":
+                initialized = torch.softmax(initialized, dim=-1)
+            coordinates.copy_(initialized)
 
     def _dense_generators(self) -> torch.Tensor:
         if self.generator_type == "diagonal":

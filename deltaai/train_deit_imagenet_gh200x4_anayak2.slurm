@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Controlled DeiT-B/16 ImageNet-1K training. Examples:
+# Controlled DeiT-B/16 ImageNet-1K training on anayak2.
 #
-#   sbatch --export=ALL,ATTENTION_TYPE=mha deltaai/train_deit_imagenet_gh200x4.slurm
-#   sbatch --export=ALL,ATTENTION_TYPE=gt_mha_residual,NUM_BASE_HEADS=4 deltaai/train_deit_imagenet_gh200x4.slurm
+# Example matched raw-mixing GT-MHA run:
+#   sbatch --export=ALL,ATTENTION_TYPE=gt_mha_residual,GENERATOR_MIXING=none,RAW_MIXING_INIT=softmax_matched deltaai/train_deit_imagenet_gh200x4_anayak2.slurm
 #SBATCH --job-name=deit-attn
-#SBATCH --account=biad-dtai-gh
+#SBATCH --account=bicn-dtai-gh
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -12,15 +12,15 @@
 #SBATCH --mem=256g
 #SBATCH --gpus-per-node=4
 #SBATCH --time=48:00:00
-#SBATCH --output=/work/hdd/biad/sshaik4/logs/%x_%j.out
-#SBATCH --error=/work/hdd/biad/sshaik4/logs/%x_%j.err
+#SBATCH --output=/work/hdd/bicn/anayak2/logs/%x_%j.out
+#SBATCH --error=/work/hdd/bicn/anayak2/logs/%x_%j.err
 
 set -euo pipefail
 
-REPO_DIR=${REPO_DIR:-/u/sshaik4/Attention-is-Transformed-vision}
-VENV_DIR=/work/hdd/biad/sshaik4/venvs/lgma-vision
-DATA_DIR=${DATA_DIR:-/work/nvme/biad/sshaik4/lgma_data/imagenet_wds_official}
-RUNS_DIR=${RUNS_DIR:-/work/hdd/biad/sshaik4/lgma_runs/imagenet}
+REPO_DIR=${REPO_DIR:-/u/anayak2/Attention-is-Transformed-vision}
+VENV_DIR=${VENV_DIR:-/work/hdd/bicn/anayak2/venvs/lgma-vision}
+DATA_DIR=${DATA_DIR:-/work/hdd/bicn/sshaik4/imagenet_wds_official}
+RUNS_DIR=${RUNS_DIR:-/work/hdd/bicn/anayak2/lgma_runs/imagenet}
 ATTENTION_TYPE=${ATTENTION_TYPE:-gt_mha_residual}
 NUM_BASE_HEADS=${NUM_BASE_HEADS:-4}
 NUM_VALUE_BASE_HEADS=${NUM_VALUE_BASE_HEADS:-${NUM_BASE_HEADS}}
@@ -30,6 +30,9 @@ RAW_MIXING_INIT=${RAW_MIXING_INIT:-direct}
 NUM_KV_HEADS=${NUM_KV_HEADS:-4}
 REDUCED_QK_DIM=${REDUCED_QK_DIM:-384}
 COLLABORATIVE_QK_DIM=${COLLABORATIVE_QK_DIM:-384}
+THETA_INIT=${THETA_INIT:-balanced_simplex}
+THETA_INIT_SCALE=${THETA_INIT_SCALE:-4.0}
+GENERATOR_INIT_SCALE=${GENERATOR_INIT_SCALE:-0.02}
 SEED=${SEED:-42}
 EPOCHS=${EPOCHS:-300}
 BATCH_SIZE=${BATCH_SIZE:-256}
@@ -56,7 +59,7 @@ export OMP_NUM_THREADS=4
 export WANDB_ENTITY=${WANDB_ENTITY:-i2rLAB}
 export WANDB_PROJECT=${WANDB_PROJECT:-gt-mha-imagenet}
 
-mkdir -p "${OUTPUT_DIR}" /work/hdd/biad/sshaik4/logs
+mkdir -p "${OUTPUT_DIR}" /work/hdd/bicn/anayak2/logs
 cd "${REPO_DIR}"
 export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
 
@@ -99,6 +102,9 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
   --num-generators "${NUM_GENERATORS}" \
   --generator-mixing "${GENERATOR_MIXING}" \
   --raw-mixing-init "${RAW_MIXING_INIT}" \
+  --theta-init "${THETA_INIT}" \
+  --theta-init-scale "${THETA_INIT_SCALE}" \
+  --generator-init-scale "${GENERATOR_INIT_SCALE}" \
   --value-diversity-weight "${VALUE_DIVERSITY_WEIGHT}" \
   --epochs "${EPOCHS}" \
   --batch-size "${BATCH_SIZE}" \

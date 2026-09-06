@@ -61,6 +61,7 @@ class DeiTConfig:
     num_value_base_heads: int | None = None
     num_generators: int = 8
     generator_mixing: str = "softmax"
+    raw_mixing_init: str = "direct"
     theta_init: str = "balanced_simplex"
     theta_init_scale: float = 4.0
     generator_init_scale: float = 0.02
@@ -103,6 +104,10 @@ class DeiTConfig:
                 raise ValueError("num_heads must be divisible by num_value_base_heads")
         if self.theta_init not in {"balanced_simplex", "random_sphere", "circle"}:
             raise ValueError(f"unsupported theta_init: {self.theta_init}")
+        if self.raw_mixing_init not in {"direct", "softmax_matched"}:
+            raise ValueError(f"unsupported raw_mixing_init: {self.raw_mixing_init}")
+        if self.raw_mixing_init == "softmax_matched" and self.generator_mixing != "none":
+            raise ValueError("softmax_matched raw initialization requires generator_mixing='none'")
         if self.theta_init_scale < 0 or self.generator_init_scale <= 0:
             raise ValueError(
                 "theta_init_scale must be non-negative and generator_init_scale positive"
@@ -213,6 +218,7 @@ def build_vision_attention(config: DeiTConfig) -> nn.Module:
         bias=config.qkv_bias,
         generator_type="full",
         generator_mixing=config.generator_mixing,
+        raw_mixing_init=config.raw_mixing_init,
         use_sdpa=config.use_sdpa,
         causal=False,
         stabilize_generators=False,

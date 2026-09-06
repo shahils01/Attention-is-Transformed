@@ -24,6 +24,8 @@ ATTENTION_TYPE=${ATTENTION_TYPE:-gqa}
 NUM_BASE_HEADS=${NUM_BASE_HEADS:-4}
 NUM_VALUE_BASE_HEADS=${NUM_VALUE_BASE_HEADS:-${NUM_BASE_HEADS}}
 NUM_GENERATORS=${NUM_GENERATORS:-8}
+GENERATOR_MIXING=${GENERATOR_MIXING:-softmax}
+RAW_MIXING_INIT=${RAW_MIXING_INIT:-direct}
 NUM_KV_HEADS=${NUM_KV_HEADS:-4}
 REDUCED_QK_DIM=${REDUCED_QK_DIM:-384}
 COLLABORATIVE_QK_DIM=${COLLABORATIVE_QK_DIM:-384}
@@ -94,6 +96,8 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
   --num-base-heads "${NUM_BASE_HEADS}" \
   --num-value-base-heads "${NUM_VALUE_BASE_HEADS}" \
   --num-generators "${NUM_GENERATORS}" \
+  --generator-mixing "${GENERATOR_MIXING}" \
+  --raw-mixing-init "${RAW_MIXING_INIT}" \
   --value-diversity-weight "${VALUE_DIVERSITY_WEIGHT}" \
   --epochs "${EPOCHS}" \
   --batch-size "${BATCH_SIZE}" \

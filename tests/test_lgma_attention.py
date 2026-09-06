@@ -231,6 +231,44 @@ def test_generator_mixing_softmax_default_and_none_are_configurable():
     assert softmax_layer.state_dict().keys() == raw_layer.state_dict().keys()
 
 
+def test_softmax_matched_raw_mixing_starts_identically_for_qk_and_value():
+    common = dict(
+        d_model=32,
+        num_heads=4,
+        head_dim=8,
+        num_generators=3,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        theta_init="balanced_simplex",
+        theta_init_scale=4.0,
+        use_sdpa=False,
+    )
+    torch.manual_seed(123)
+    softmax_layer = LieGeneratedMetricAttention(
+        **common,
+        generator_mixing="softmax",
+    )
+    torch.manual_seed(123)
+    raw_layer = LieGeneratedMetricAttention(
+        **common,
+        generator_mixing="none",
+        raw_mixing_init="softmax_matched",
+    )
+
+    assert torch.allclose(
+        raw_layer.metric_theta_weights(), softmax_layer.metric_theta_weights()
+    )
+    assert torch.allclose(
+        raw_layer.value_theta_weights(), softmax_layer.value_theta_weights()
+    )
+    assert torch.allclose(raw_layer.compute_metrics(), softmax_layer.compute_metrics())
+    assert torch.allclose(
+        raw_layer.compute_value_transforms(), softmax_layer.compute_value_transforms()
+    )
+    x = torch.randn(2, 5, 32)
+    assert torch.allclose(raw_layer(x), softmax_layer(x), atol=1e-6)
+
+
 def test_generator_mixing_rejects_unknown_mode():
     try:
         LieGeneratedMetricAttention(

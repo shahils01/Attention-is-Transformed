@@ -51,6 +51,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-generators", type=int, default=8)
     parser.add_argument("--generator-mixing", choices=("softmax", "none"), default="softmax")
     parser.add_argument(
+        "--raw-mixing-init",
+        choices=("direct", "softmax_matched"),
+        default="direct",
+        help=(
+            "Initialization for generator_mixing=none. softmax_matched stores "
+            "the baseline softmax weights as the initial raw Q/K and V coefficients."
+        ),
+    )
+    parser.add_argument(
         "--theta-init",
         choices=("balanced_simplex", "random_sphere", "circle"),
         default="balanced_simplex",
@@ -187,6 +196,7 @@ def model_config(args: argparse.Namespace) -> DeiTConfig:
         num_value_base_heads=args.num_value_base_heads,
         num_generators=args.num_generators,
         generator_mixing=args.generator_mixing,
+        raw_mixing_init=args.raw_mixing_init,
         theta_init=args.theta_init,
         theta_init_scale=args.theta_init_scale,
         generator_init_scale=args.generator_init_scale,
