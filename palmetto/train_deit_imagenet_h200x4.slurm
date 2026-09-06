@@ -36,6 +36,8 @@ VALUE_DIVERSITY_WEIGHT=${VALUE_DIVERSITY_WEIGHT:-0}
 SEED=${SEED:-42}
 EPOCHS=${EPOCHS:-300}
 BATCH_SIZE=${BATCH_SIZE:-256}
+NUM_GPUS=${NUM_GPUS:-4}
+WORKERS=${WORKERS:-12}
 WANDB_MODE=${WANDB_MODE:-online}
 RUN_SUFFIX=${RUN_SUFFIX:-}
 MAX_TRAIN_BATCHES=${MAX_TRAIN_BATCHES:-}
@@ -82,7 +84,7 @@ if [[ -f "${OUTPUT_DIR}/checkpoint_last.pt" ]]; then
   RESUME_ARGS=(--resume "${OUTPUT_DIR}/checkpoint_last.pt")
 fi
 
-python -m torch.distributed.run --standalone --nproc_per_node=4 \
+python -m torch.distributed.run --standalone --nproc_per_node="${NUM_GPUS}" \
   experiments/train_imagenet_deit.py \
   --data-dir "${DATA_DIR}" \
   --dataset-format wds \
@@ -102,7 +104,7 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 \
   --value-diversity-weight "${VALUE_DIVERSITY_WEIGHT}" \
   --epochs "${EPOCHS}" \
   --batch-size "${BATCH_SIZE}" \
-  --workers 12 \
+  --workers "${WORKERS}" \
   --precision bf16 \
   --seed "${SEED}" \
   --wandb-mode "${WANDB_MODE}" \
