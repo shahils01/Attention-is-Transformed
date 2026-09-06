@@ -21,11 +21,16 @@ CHECKPOINT_DIR=${PROJECT_DIR}/lgma_runs/bert_base_gt_mha_identity_qk_b4g8h12_ran
 module load python/miniforge3_pytorch/2.12.0
 source "${VENV_DIR}/bin/activate"
 cd "${REPO_DIR}"
-export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_DIR}/compat/no_transformer_engine:${REPO_DIR}/src:${PYTHONPATH:-}"
 
 python - <<'PY'
 import torch
+import transformer_engine
+from transformers import Trainer
+import peft
 from lgma.bert import load_bert_sequence_classifier
+
+assert not hasattr(transformer_engine, "pytorch")
 
 checkpoint = "/work/hdd/bicn/anayak2/lgma_runs/bert_base_gt_mha_identity_qk_b4g8h12_random_seed42"
 model, audit = load_bert_sequence_classifier(

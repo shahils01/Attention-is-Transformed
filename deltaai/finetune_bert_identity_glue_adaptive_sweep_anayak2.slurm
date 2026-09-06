@@ -87,7 +87,7 @@ HF_HUB_OFFLINE=0 HF_DATASETS_OFFLINE=0 python "${CACHE_SCRIPT}" --tasks "${CACHE
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 cd "${REPO_DIR}"
-export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_DIR}/compat/no_transformer_engine:${REPO_DIR}/src:${PYTHONPATH:-}"
 
 lr_tag() {
   printf '%s' "${1//e-/em}"
