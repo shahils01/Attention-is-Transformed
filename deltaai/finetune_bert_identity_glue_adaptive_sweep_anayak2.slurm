@@ -111,7 +111,7 @@ latest_checkpoint() {
 
 run_one() {
   local gpu=$1 task=$2 seed=$3 learning_rate=$4 stage=$5 epochs=$6
-  local tag metric_name prefix run_name output_dir checkpoint resume_args=()
+  local tag metric_name prefix run_name output_dir checkpoint wandb_group resume_args=()
   tag=$(lr_tag "${learning_rate}")
   metric_name=$(task_metric "${task}")
   if [[ "${task}" == wnli ]]; then
@@ -120,6 +120,11 @@ run_one() {
   else
     prefix=${RUN_PREFIX}_${task}
     run_name=${prefix}_${METHOD}_lr${tag}_seed${seed}_${stage}
+  fi
+  if [[ "${FAMILY}" == stsb ]]; then
+    wandb_group=${METHOD}
+  else
+    wandb_group=${task}-${METHOD}
   fi
   output_dir=${PROJECT_DIR}/lgma_runs/${run_name}
 
@@ -141,7 +146,7 @@ run_one() {
   CUDA_VISIBLE_DEVICES=${gpu} \
   WANDB_RUN_ID=${prefix}_${METHOD}_${tag}_s${seed}_${stage} \
   WANDB_NAME=${run_name} \
-  WANDB_RUN_GROUP=${task}-${METHOD} \
+  WANDB_RUN_GROUP=${wandb_group} \
   WANDB_TAGS=${WANDB_TAG_PREFIX},task-${task},attention-${METHOD},lr-${tag},stage-${stage} \
   python "${TRAIN_SCRIPT}" \
     --model-name-or-path "${CHECKPOINT_DIR}" --task "${task}" \
