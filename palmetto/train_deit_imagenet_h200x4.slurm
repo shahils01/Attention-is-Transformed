@@ -52,6 +52,7 @@ if [[ -n "${RUN_SUFFIX}" ]]; then
 fi
 OUTPUT_DIR=${RUNS_DIR}/${RUN_NAME}
 
+source /usr/share/lmod/lmod/init/bash
 module load anaconda3/2023.09-0
 source "${ENV_DIR}/bin/activate"
 export PYTHONNOUSERSITE=1

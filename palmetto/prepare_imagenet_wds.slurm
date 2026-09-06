@@ -22,6 +22,7 @@ TRAIN_SHUFFLE_SEED=${TRAIN_SHUFFLE_SEED:-0}
 MAX_TRAIN_SAMPLES=${MAX_TRAIN_SAMPLES:-}
 MAX_VAL_SAMPLES=${MAX_VAL_SAMPLES:-}
 
+source /usr/share/lmod/lmod/init/bash
 module load anaconda3/2023.09-0
 export PYTHONNOUSERSITE=1
 
