@@ -54,7 +54,8 @@ fi
 OUTPUT_DIR=${RUNS_DIR}/${RUN_NAME}
 
 module load anaconda3/2023.09-0
-source "${ENV_DIR}/bin/activate"
+source "${ANACONDA3_ROOT}/etc/profile.d/conda.sh"
+conda activate "${ENV_DIR}"
 export PYTHONNOUSERSITE=1
 export OMP_NUM_THREADS=4
 export WANDB_ENTITY=${WANDB_ENTITY:-i2rLAB}
