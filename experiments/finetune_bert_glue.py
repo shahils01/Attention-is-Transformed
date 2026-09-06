@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sdpa-gqa-mode", choices=["auto", "native", "expand"], default="auto")
     p.add_argument("--enforce-paper-gt-mha", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument(
+        "--resume-from-checkpoint",
+        type=Path,
+        help="Resume an interrupted Trainer run from a checkpoint directory.",
+    )
     p.add_argument("--max-sequence-length", type=int, default=128)
     p.add_argument("--per-device-train-batch-size", type=int, default=32)
     p.add_argument("--per-device-eval-batch-size", type=int, default=64)
@@ -202,7 +207,11 @@ def main() -> None:
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
     }
     (args.output_dir / "bert_glue_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    train_result = trainer.train()
+    train_result = trainer.train(
+        resume_from_checkpoint=(
+            str(args.resume_from_checkpoint) if args.resume_from_checkpoint else None
+        )
+    )
     evaluation = trainer.evaluate()
     trainer.save_model()
     tokenizer.save_pretrained(args.output_dir)
