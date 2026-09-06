@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64g
 #SBATCH --gpus-per-node=1
-#SBATCH --time=00:15:00
+#SBATCH --time=00:30:00
 #SBATCH --output=/work/hdd/bicn/anayak2/logs/%x_%j.out
 #SBATCH --error=/work/hdd/bicn/anayak2/logs/%x_%j.err
 
@@ -27,7 +27,6 @@ python - <<'PY'
 import torch
 import transformer_engine
 from transformers import Trainer
-import peft
 from lgma.bert import load_bert_sequence_classifier
 
 assert not hasattr(transformer_engine, "pytorch")
