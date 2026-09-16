@@ -19,6 +19,7 @@ from lgma.transformer import TinyTransformerLM
 
 
 DEFAULT_STOP_SEQUENCE = "<|endoftext|>"
+_TOKENIZER_CACHE: dict[tuple[tuple[str, int, int], ...], CharTokenizer] = {}
 
 
 def read_texts(data_path: Path, val_data_path: Path | None) -> tuple[str, str | None]:
@@ -35,16 +36,28 @@ def build_tokenizer(train_text: str, val_text: str | None) -> CharTokenizer:
 
 def build_tokenizer_from_files(*paths: Path | None) -> CharTokenizer:
     """Recreate the character vocabulary without retaining the corpus in memory."""
+    existing_paths = [path for path in paths if path is not None]
+    cache_key = tuple(
+        (
+            str(path.resolve()),
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+        )
+        for path in existing_paths
+    )
+    cached = _TOKENIZER_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     chars: set[str] = set()
-    for path in paths:
-        if path is None:
-            continue
+    for path in existing_paths:
         with path.open("r", encoding="utf-8") as handle:
             while chunk := handle.read(1024 * 1024):
                 chars.update(chunk)
     if not chars:
         raise SystemExit("the tokenizer source files contain no text")
-    return CharTokenizer("".join(chars))
+    tokenizer = CharTokenizer("".join(chars))
+    _TOKENIZER_CACHE[cache_key] = tokenizer
+    return tokenizer
 
 
 def paths_from_checkpoint(

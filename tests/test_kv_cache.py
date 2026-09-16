@@ -37,6 +37,10 @@ def build_model(attention_type: str, **overrides) -> TinyTransformerLM:
                 "value_transform": "lie_quadratic",
                 "base_dim": 6,
                 "value_dim": 6,
+                "generator_mixing": "none",
+                "fuse_base_qkv": True,
+                "fold_value_transform_into_output": True,
+                "sdpa_gqa_mode": "expand",
             },
         ),
     ],
@@ -113,4 +117,3 @@ def test_using_cache_does_not_change_state_dict():
     after = model.state_dict()
     assert before.keys() == after.keys()
     assert all(torch.equal(before[name], after[name]) for name in before)
-

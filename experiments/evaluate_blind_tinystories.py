@@ -18,7 +18,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_COMPARISON_DIR = ROOT / "outputs" / "tinystories_lgma_mha_100"
 DEFAULT_EVAL_DIR = DEFAULT_COMPARISON_DIR / "blind_eval"
-METRICS = ("grammar", "creativity", "consistency", "theme_alignment", "overall")
+METRICS = ("grammar", "creativity", "consistency",  "overall")
 RUBRIC_VERSION = 1
 JUDGE_PROVIDERS: dict[str, dict[str, str | None]] = {
     "openai": {

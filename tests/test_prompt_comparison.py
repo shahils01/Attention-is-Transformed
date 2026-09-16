@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "experiments"))
 
 from compare_tinystories_prompts import (  # noqa: E402
+    discover_checkpoints,
     load_prompts,
     main,
     make_run_id,
@@ -71,6 +72,30 @@ def test_run_id_changes_with_decoding_configuration(tmp_path):
     assert first != second
 
 
+def test_checkpoint_discovery_is_sorted_and_names_nested_folders(tmp_path):
+    (tmp_path / "MHA").mkdir()
+    (tmp_path / "GT-MHA quad").mkdir()
+    mha = tmp_path / "MHA" / "checkpoint_step_20.pt"
+    gt_mha = tmp_path / "GT-MHA quad" / "checkpoint_step_10.pt"
+    mha.touch()
+    gt_mha.touch()
+
+    assert discover_checkpoints(tmp_path, "**/checkpoint_step_*.pt") == [
+        ("gt_mha_quad", gt_mha),
+        ("mha", mha),
+    ]
+
+
+def test_checkpoint_discovery_includes_final_checkpoints(tmp_path):
+    (tmp_path / "Identity").mkdir()
+    final = tmp_path / "Identity" / "checkpoint_final.pt"
+    final.touch()
+
+    assert discover_checkpoints(tmp_path, "**/checkpoint*.pt") == [
+        ("identity", final)
+    ]
+
+
 def test_markdown_report_pairs_models_by_prompt(tmp_path):
     output = tmp_path / "comparison.md"
     prompts = [
@@ -95,7 +120,7 @@ def test_markdown_report_pairs_models_by_prompt(tmp_path):
     render_markdown(output, prompts, rows, ["lgma", "mha"], "run1")
     rendered = output.read_text()
 
-    assert "Completed pairs: 1/2" in rendered
+    assert "Completed generations: 1/2" in rendered
     assert "### lgma\n\n_Not generated yet._" in rendered
     assert "### mha" in rendered
     assert "under the chair" in rendered
@@ -151,6 +176,8 @@ def test_comparison_runs_and_resumes_with_generation_only_loader(tmp_path, monke
         "cpu",
         "--max_new_tokens",
         "2",
+        "--samples_per_prompt",
+        "5",
         "--output_dir",
         str(output_dir),
     ]
@@ -160,8 +187,15 @@ def test_comparison_runs_and_resumes_with_generation_only_loader(tmp_path, monke
     main()
 
     rows = [json.loads(line) for line in (output_dir / "completions.jsonl").read_text().splitlines()]
-    assert len(rows) == 1
-    assert rows[0]["checkpoint_step"] == 7
-    assert rows[0]["prompt_id"] == "p1"
-    assert rows[0]["model"] == "tiny"
-    assert "Completed pairs: 1/1" in (output_dir / "comparison.md").read_text()
+    assert len(rows) == 5
+    assert {row["checkpoint_step"] for row in rows} == {7}
+    assert {row["prompt_id"] for row in rows} == {"p1"}
+    assert {row["model"] for row in rows} == {"tiny"}
+    assert [row["sample_number"] for row in rows] == [1, 2, 3, 4, 5]
+    assert "Completed generations: 5/5" in (output_dir / "comparison.md").read_text()
+    assert json.loads((output_dir / "run_manifest.json").read_text())["models"] == ["tiny"]
+    individual = output_dir / "checkpoints" / "tiny" / "completions.jsonl"
+    assert len(individual.read_text().splitlines()) == 5
+    assert "Completed generations: 5/5" in (
+        output_dir / "checkpoints" / "tiny" / "report.md"
+    ).read_text()

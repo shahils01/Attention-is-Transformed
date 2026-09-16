@@ -259,6 +259,14 @@ For a Clemson RCD API key, export it as `RCD_LLM_API_KEY` and add
 `--provider rcd-openai`; see `benchmarks/README.md` for the gateway model-list
 command and a complete example.
 
+The same benchmark can discover every checkpoint below `ckpts`, generate them
+sequentially with one checkpoint resident on the GPU at a time, and perform a
+balanced multi-candidate blind evaluation with GPT-5.6 Sol. Pass
+`--samples_per_prompt 5` to generate and evaluate five independent
+continuations per checkpoint/prompt; the unblinding reports per-prompt,
+per-theme, and per-checkpoint means and sample variances. See the
+"Sequential evaluation of every checkpoint" section in `benchmarks/README.md`.
+
 Only `blind.jsonl` is read by the API judging stage. The private
 `blind_mapping.jsonl` is used later by the local unblinding stage. See
 `benchmarks/README.md` for manual judging and explicit path examples.
