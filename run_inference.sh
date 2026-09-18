@@ -3,6 +3,9 @@
 # Run the complete TinyStories checkpoint evaluation pipeline:
 #   inference -> blind-set preparation -> blind judging -> unblinding
 #
+# By default, recovery mode generates only MQA and reuses the seven completed
+# checkpoint shards. Set RUN_ONLY_MQA=0 to restore the normal all-model run.
+#
 # Activate the desired HPC Python environment before launching this script, or
 # set VENV_DIR to a virtual environment that should be activated here.
 
@@ -36,6 +39,7 @@ TOP_K="${TOP_K:-20}"
 SEED="${SEED:-0}"
 SAMPLES_PER_PROMPT="${SAMPLES_PER_PROMPT:-5}"
 NUM_PROMPTS="${NUM_PROMPTS:-0}"
+RUN_ONLY_MQA="${RUN_ONLY_MQA:-1}"
 
 JUDGE_PROVIDER="${JUDGE_PROVIDER:-rcd-openai}"
 JUDGE_MODEL="${JUDGE_MODEL:-gpt-5.6-sol}"
@@ -75,7 +79,119 @@ require_file "${VAL_DATA}"
 mkdir -p "${OUTPUT_DIR}" "${BLIND_DIR}"
 cd "${REPO_DIR}"
 
-echo "[1/4] Generating checkpoint completions (resumes completed generations)"
+inference_extra_args=()
+if [[ "${RUN_ONLY_MQA}" == "1" ]]; then
+  completed_models=(
+    collaborative_mha
+    gqa
+    gt_mha_exact
+    gt_mha_qk_identity_b4g8h16
+    gt_mha_quad
+    gt_mha_residual
+    mha
+  )
+  echo "Recovering the combined completion file from checkpoint shards"
+  require_file "${MANIFEST_FILE}"
+  "${PYTHON_BIN}" - \
+    "${COMPLETIONS_FILE}" \
+    "${OUTPUT_DIR}/checkpoints" \
+    "${MANIFEST_FILE}" \
+    "${PROMPTS_FILE}" \
+    "${SAMPLES_PER_PROMPT}" \
+    "${completed_models[@]}" <<'PY'
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+combined_path = Path(sys.argv[1])
+shard_root = Path(sys.argv[2])
+manifest_path = Path(sys.argv[3])
+prompts_path = Path(sys.argv[4])
+samples_per_prompt = int(sys.argv[5])
+completed_models = sys.argv[6:]
+sources = []
+if combined_path.is_file():
+    sources.append(combined_path)
+sources.extend(sorted(shard_root.glob("*/completions.jsonl")))
+if not sources:
+    raise SystemExit(
+        "No existing combined or per-checkpoint completion files were found; "
+        "cannot use MQA-only recovery mode."
+    )
+
+rows = []
+by_key = {}
+for source in sources:
+    for line_number, line in enumerate(
+        source.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"Invalid JSON in {source}:{line_number}: {exc}") from exc
+        key = (
+            row.get("run_id"),
+            row.get("model"),
+            row.get("prompt_id"),
+            int(row.get("sample_index", 0)),
+        )
+        previous = by_key.get(key)
+        if previous is not None:
+            if previous != row:
+                raise SystemExit(f"Conflicting completion rows for {key}")
+            continue
+        by_key[key] = row
+        rows.append(row)
+
+combined_path.parent.mkdir(parents=True, exist_ok=True)
+temporary = combined_path.with_suffix(combined_path.suffix + ".merge.tmp")
+with temporary.open("w", encoding="utf-8") as handle:
+    for row in rows:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+temporary.replace(combined_path)
+
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+run_id = manifest.get("run_id")
+prompt_count = sum(
+    1 for line in prompts_path.read_text(encoding="utf-8").splitlines() if line.strip()
+)
+expected_count = prompt_count * samples_per_prompt
+counts = Counter(
+    str(row.get("model")) for row in rows if row.get("run_id") == run_id
+)
+incorrect = {
+    model: counts.get(model, 0)
+    for model in completed_models
+    if counts.get(model, 0) != expected_count
+}
+if incorrect:
+    details = ", ".join(
+        f"{model}={count}/{expected_count}" for model, count in incorrect.items()
+    )
+    raise SystemExit(
+        "Cannot run MQA-only recovery because preserved checkpoints are incomplete "
+        f"for manifest run {run_id}: {details}"
+    )
+print(
+    f"Recovered and verified {expected_count} completions for each preserved model "
+    f"in run {run_id}."
+)
+PY
+
+  for model in "${completed_models[@]}"; do
+    inference_extra_args+=(--skip_checkpoint_name "${model}")
+  done
+  echo "[1/4] Generating only the missing MQA completions"
+elif [[ "${RUN_ONLY_MQA}" == "0" ]]; then
+  echo "[1/4] Generating checkpoint completions (resumes completed generations)"
+else
+  echo "RUN_ONLY_MQA must be either 0 or 1." >&2
+  exit 2
+fi
+
 "${PYTHON_BIN}" -u experiments/compare_tinystories_prompts.py \
   --checkpoint_dir "${CHECKPOINT_DIR}" \
   --checkpoint_glob "${CHECKPOINT_GLOB}" \
@@ -89,7 +205,8 @@ echo "[1/4] Generating checkpoint completions (resumes completed generations)"
   --top_k "${TOP_K}" \
   --seed "${SEED}" \
   --samples_per_prompt "${SAMPLES_PER_PROMPT}" \
-  --output_dir "${OUTPUT_DIR}"
+  --output_dir "${OUTPUT_DIR}" \
+  "${inference_extra_args[@]}"
 
 echo "[2/4] Preparing anonymous blind-evaluation records"
 blind_artifacts=0
