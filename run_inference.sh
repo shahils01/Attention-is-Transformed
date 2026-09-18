@@ -3,7 +3,7 @@
 # Run the complete TinyStories checkpoint evaluation pipeline:
 #   inference -> blind-set preparation -> blind judging -> unblinding
 #
-# By default, recovery mode generates only MQA and reuses the seven completed
+# By default, recovery mode resumes MHA and MQA while reusing the six completed
 # checkpoint shards. Set RUN_ONLY_MQA=0 to restore the normal all-model run.
 #
 # Activate the desired HPC Python environment before launching this script, or
@@ -88,7 +88,6 @@ if [[ "${RUN_ONLY_MQA}" == "1" ]]; then
     gt_mha_qk_identity_b4g8h16
     gt_mha_quad
     gt_mha_residual
-    mha
   )
   echo "Recovering the combined completion file from checkpoint shards"
   require_file "${MANIFEST_FILE}"
@@ -172,7 +171,7 @@ if incorrect:
         f"{model}={count}/{expected_count}" for model, count in incorrect.items()
     )
     raise SystemExit(
-        "Cannot run MQA-only recovery because preserved checkpoints are incomplete "
+        "Cannot run MHA/MQA recovery because preserved checkpoints are incomplete "
         f"for manifest run {run_id}: {details}"
     )
 print(
@@ -184,7 +183,7 @@ PY
   for model in "${completed_models[@]}"; do
     inference_extra_args+=(--skip_checkpoint_name "${model}")
   done
-  echo "[1/4] Generating only the missing MQA completions"
+  echo "[1/4] Resuming missing MHA and MQA completions"
 elif [[ "${RUN_ONLY_MQA}" == "0" ]]; then
   echo "[1/4] Generating checkpoint completions (resumes completed generations)"
 else
