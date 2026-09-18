@@ -84,7 +84,7 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError(f"unsupported generator_type: {generator_type}")
         if generator_mixing not in {"softmax", "none"}:
             raise ValueError(f"unsupported generator_mixing: {generator_mixing}")
-        if metric_mode not in {"exp", "residual", "quadratic", "unconstrained"}:
+        if metric_mode not in {"identity", "exp", "residual", "quadratic", "unconstrained"}:
             raise ValueError(f"unsupported metric_mode: {metric_mode}")
         if theta_init not in {"random_sphere", "circle"}:
             raise ValueError(f"unsupported theta_init: {theta_init}")
@@ -165,11 +165,13 @@ class LieGeneratedMetricAttention(nn.Module):
 
         if metric_mode == "unconstrained":
             self.raw_metrics = nn.Parameter(torch.empty(num_heads, self.base_dim, self.base_dim))
+        elif metric_mode == "identity":
+            pass
         elif generator_type == "diagonal":
             self.generators = nn.Parameter(torch.empty(num_generators, self.base_dim))
         else:
             self.generators = nn.Parameter(torch.empty(num_generators, self.base_dim, self.base_dim))
-        if metric_mode != "unconstrained":
+        if metric_mode not in {"identity", "unconstrained"}:
             self.theta = nn.Parameter(torch.empty(num_heads, num_generators))
         if learn_head_temperature:
             self.head_logit_scale = nn.Parameter(torch.ones(num_heads))
@@ -203,7 +205,7 @@ class LieGeneratedMetricAttention(nn.Module):
 
         if self.metric_mode == "unconstrained":
             nn.init.zeros_(self.raw_metrics)
-        else:
+        elif self.metric_mode != "identity":
             generator_std = self.generator_init_scale / math.sqrt(self.base_dim)
             nn.init.normal_(self.generators, mean=0.0, std=generator_std)
             self._init_theta()
@@ -311,6 +313,14 @@ class LieGeneratedMetricAttention(nn.Module):
 
     def compute_head_generators(self) -> torch.Tensor:
         """Return dense per-head A_h generators after applying metric_beta."""
+        if self.metric_mode == "identity":
+            return torch.zeros(
+                self.num_heads,
+                self.base_dim,
+                self.base_dim,
+                device=self.q_proj.weight.device,
+                dtype=self.q_proj.weight.dtype,
+            )
         if self.metric_mode == "unconstrained":
             return self.metric_beta * self.raw_metrics
         if self.generator_type == "diagonal":
@@ -350,7 +360,10 @@ class LieGeneratedMetricAttention(nn.Module):
 
     def pre_cap_head_generator_symmetric_norms(self) -> torch.Tensor | None:
         """Return per-head symmetric norms before applying the configured cap."""
-        if self.head_generator_symmetric_cap is None or self.metric_mode == "unconstrained":
+        if self.head_generator_symmetric_cap is None or self.metric_mode in {
+            "identity",
+            "unconstrained",
+        }:
             return None
         if self.generator_type == "diagonal":
             diagonal = torch.einsum(
@@ -400,6 +413,13 @@ class LieGeneratedMetricAttention(nn.Module):
         return clipped_metrics.to(dtype=metrics.dtype)
 
     def compute_metrics(self) -> torch.Tensor:
+        if self.metric_mode == "identity":
+            eye = torch.eye(
+                self.base_dim,
+                device=self.q_proj.weight.device,
+                dtype=self.q_proj.weight.dtype,
+            )
+            return eye[None, :, :].expand(self.num_heads, self.base_dim, self.base_dim)
         if self.metric_mode == "unconstrained":
             eye = torch.eye(self.base_dim, device=self.raw_metrics.device, dtype=self.raw_metrics.dtype)
             metrics = eye[None, :, :] + self.metric_beta * self.raw_metrics
@@ -440,6 +460,14 @@ class LieGeneratedMetricAttention(nn.Module):
 
     def effective_generators(self) -> torch.Tensor:
         """Return dense stabilized generator basis for diagnostics."""
+        if self.metric_mode == "identity":
+            return torch.empty(
+                0,
+                self.base_dim,
+                self.base_dim,
+                device=self.q_proj.weight.device,
+                dtype=self.q_proj.weight.dtype,
+            )
         if self.metric_mode == "unconstrained":
             return self.raw_metrics
         return self._dense_generators()
@@ -543,7 +571,7 @@ class LieGeneratedMetricAttention(nn.Module):
         if (
             metrics is None
             and self.generator_type == "diagonal"
-            and self.metric_mode != "unconstrained"
+            and self.metric_mode not in {"identity", "unconstrained"}
             and self.metric_clip_min is None
             and self.metric_clip_max is None
         ):

@@ -47,6 +47,15 @@ def parse_args():
         default="**/checkpoint*.pt",
         help="Glob used with --checkpoint_dir (default: **/checkpoint*.pt).",
     )
+    parser.add_argument(
+        "--skip_checkpoint_name",
+        action="append",
+        default=[],
+        help=(
+            "Discovered or explicitly named checkpoint to skip for this invocation. "
+            "Repeat as needed; skipped checkpoints remain in the run manifest/run ID."
+        ),
+    )
     parser.add_argument("--prompts_file", type=Path, default=DEFAULT_PROMPTS)
     parser.add_argument("--data_path", type=Path, default=None)
     parser.add_argument("--val_data_path", type=Path, default=None)
@@ -360,6 +369,13 @@ def main() -> None:
     model_names = [name for name, _ in checkpoints]
     if len(set(model_names)) != len(model_names):
         raise SystemExit("checkpoint names must be unique")
+    unknown_skips = sorted(set(args.skip_checkpoint_name).difference(model_names))
+    if unknown_skips:
+        raise SystemExit(
+            "--skip_checkpoint_name did not match a checkpoint: "
+            + ", ".join(unknown_skips)
+        )
+    skipped_models = set(args.skip_checkpoint_name)
 
     run_id = make_run_id(
         args.prompts_file,
@@ -409,6 +425,9 @@ def main() -> None:
         )
     )
     for model_name, checkpoint_path in checkpoints:
+        if model_name in skipped_models:
+            print(json.dumps({"event": "model_skipped", "model": model_name}))
+            continue
         model_results_path = sync_checkpoint_results(
             args.output_dir, rows, model_name, run_id
         )

@@ -226,6 +226,7 @@ def test_tiny_lm_forward_loss_for_attention_variants():
         "lgma_quad",
         "lgma_unconstrained",
         "lgma_multibase",
+        "lgma_qk_identity",
     ):
         model = TinyTransformerLM(
             vocab_size=16,
@@ -241,6 +242,29 @@ def test_tiny_lm_forward_loss_for_attention_variants():
         logits, loss = model(batch.input_ids, batch.targets)
         assert logits.shape == (2, 8, 16)
         assert torch.isfinite(loss)
+
+
+def test_qk_identity_tiny_lm_uses_fixed_metrics_and_learned_value_path():
+    model = TinyTransformerLM(
+        vocab_size=16,
+        d_model=32,
+        num_layers=1,
+        num_heads=4,
+        head_dim=8,
+        attention_type="lgma_qk_identity",
+        num_generators=2,
+        num_base_heads=2,
+        context_length=8,
+    )
+    attention = model.blocks[0].attn
+
+    assert attention.metric_mode == "identity"
+    assert attention.value_transform_mode == "residual"
+    assert attention.logit_scale_mode == "rms_metric"
+    assert hasattr(attention, "head_logit_scale")
+    assert not hasattr(attention, "generators")
+    assert not hasattr(attention, "theta")
+    assert torch.equal(attention.compute_metrics(), torch.eye(8).expand(4, 8, 8))
 
 
 def test_config_loading_instantiates_first_phase_variants():

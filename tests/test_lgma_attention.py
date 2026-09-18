@@ -237,6 +237,31 @@ def test_residual_metric_mode_returns_identity_plus_delta():
     assert torch.allclose(layer.compute_metrics(), expected, atol=1e-6)
 
 
+def test_identity_metric_fixes_scores_and_trains_residual_value_transform():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=4,
+        head_dim=4,
+        num_generators=3,
+        metric_mode="identity",
+        value_transform="lie_residual",
+        use_sdpa=False,
+    )
+
+    expected = torch.eye(4).expand(4, 4, 4)
+    assert torch.equal(layer.compute_metrics(), expected)
+    assert not hasattr(layer, "generators")
+    assert not hasattr(layer, "theta")
+
+    output = layer(torch.randn(2, 5, 16))
+    output.square().mean().backward()
+    for parameter_name in ("value_generators", "value_theta"):
+        gradient = getattr(layer, parameter_name).grad
+        assert gradient is not None
+        assert torch.isfinite(gradient).all()
+
+
 def test_quadratic_metric_mode_returns_second_order_expansion():
     torch.manual_seed(0)
     layer = LieGeneratedMetricAttention(

@@ -22,6 +22,29 @@ DEFAULT_STOP_SEQUENCE = "<|endoftext|>"
 _TOKENIZER_CACHE: dict[tuple[tuple[str, int, int], ...], CharTokenizer] = {}
 
 
+def adapt_tinystories_state_dict(
+    config: dict[str, object], state: dict[str, object]
+) -> dict[str, object]:
+    """Remove provably unused legacy tensors from scoring-identity checkpoints.
+
+    The original TinyStories Q/K-identity trainer retained zero-valued Q/K
+    generator placeholders. The clean architecture on ``origin/bert-identity``
+    has no such parameters because its scoring metric is fixed to identity.
+    """
+    if config.get("attention_type") != "lgma_qk_identity":
+        return state
+    legacy_suffixes = (".attn.generators", ".attn.theta")
+    legacy_keys = [key for key in state if key.endswith(legacy_suffixes)]
+    for key in legacy_keys:
+        value = state[key]
+        if not isinstance(value, torch.Tensor) or torch.count_nonzero(value).item() != 0:
+            raise SystemExit(
+                "lgma_qk_identity checkpoint contains a nonzero legacy Q/K tensor "
+                f"({key}); refusing to discard trained state"
+            )
+    return {key: value for key, value in state.items() if key not in legacy_keys}
+
+
 def read_texts(data_path: Path, val_data_path: Path | None) -> tuple[str, str | None]:
     train_text = data_path.read_text(encoding="utf-8")
     val_text = val_data_path.read_text(encoding="utf-8") if val_data_path is not None else None
@@ -99,7 +122,7 @@ def load_tinystories_checkpoint(
     state = checkpoint.get("model_state")
     if not isinstance(state, dict):
         raise SystemExit("checkpoint is missing model_state")
-    model.load_state_dict(state)
+    model.load_state_dict(adapt_tinystories_state_dict(config, state))
     model.eval()
     return model, tokenizer, train_encoded, val_encoded, config, int(checkpoint.get("step", 0))
 
@@ -142,7 +165,7 @@ def load_tinystories_generation_checkpoint(
         )
 
     model = TinyTransformerLM(vocab_size=tokenizer.vocab_size, **config).to(device)
-    model.load_state_dict(state)
+    model.load_state_dict(adapt_tinystories_state_dict(config, state))
     model.eval()
     return model, tokenizer, config, int(checkpoint.get("step", 0))
 

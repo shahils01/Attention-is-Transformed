@@ -32,6 +32,7 @@ AttentionType = Literal[
     "lgma_value_diag",
     "lgma_multibase",
     "lgma_multibase_value_diag",
+    "lgma_qk_identity",
 ]
 LGMA_ATTENTION_TYPES = {
     "lgma",
@@ -42,6 +43,7 @@ LGMA_ATTENTION_TYPES = {
     "lgma_value_diag",
     "lgma_multibase",
     "lgma_multibase_value_diag",
+    "lgma_qk_identity",
 }
 
 KVCache = tuple[torch.Tensor, torch.Tensor]
@@ -128,7 +130,15 @@ def build_attention(
     if attention_type in LGMA_ATTENTION_TYPES:
         if num_generators <= 0:
             raise ValueError("num_generators must be positive for LGMA")
-        if attention_type == "lgma_v2":
+        if attention_type == "lgma_qk_identity":
+            # Scoring-identity ablation from origin/bert-identity: Q/K use a
+            # fixed identity metric while the residual Lie value pathway stays
+            # trainable. TinyStories variants retain their learned head scale.
+            metric_mode = "identity"
+            logit_scale_mode = "rms_metric"
+            learn_head_temperature = True
+            value_transform = "lie_residual"
+        elif attention_type == "lgma_v2":
             metric_mode = "exp"
             logit_scale_mode = "rms_metric"
             learn_head_temperature = True

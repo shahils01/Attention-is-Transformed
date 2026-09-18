@@ -16,7 +16,10 @@ from aggregate_paper_results import (  # noqa: E402
     summarize_manifest_run,
 )
 from benchmark_tinystories_inference import benchmark_context  # noqa: E402
-from tinystories_runtime import evaluate_sequential_loss  # noqa: E402
+from tinystories_runtime import (  # noqa: E402
+    adapt_tinystories_state_dict,
+    evaluate_sequential_loss,
+)
 from lgma.transformer import TinyTransformerLM  # noqa: E402
 
 
@@ -34,6 +37,37 @@ def tiny_model(context_length=8):
     )
     model.eval()
     return model
+
+
+def test_qk_identity_checkpoint_adapter_drops_only_zero_legacy_qk_tensors():
+    config = {"attention_type": "lgma_qk_identity"}
+    state = {
+        "blocks.0.attn.generators": torch.zeros(2, 4, 4),
+        "blocks.0.attn.theta": torch.zeros(4, 2),
+        "blocks.0.attn.value_generators": torch.ones(2, 4, 4),
+        "blocks.0.attn.value_theta": torch.ones(4, 2),
+    }
+
+    adapted = adapt_tinystories_state_dict(config, state)
+
+    assert "blocks.0.attn.generators" not in adapted
+    assert "blocks.0.attn.theta" not in adapted
+    assert torch.equal(
+        adapted["blocks.0.attn.value_generators"],
+        state["blocks.0.attn.value_generators"],
+    )
+
+
+def test_qk_identity_checkpoint_adapter_refuses_nonzero_qk_tensors():
+    config = {"attention_type": "lgma_qk_identity"}
+    state = {"blocks.0.attn.generators": torch.ones(1, 2, 2)}
+
+    try:
+        adapt_tinystories_state_dict(config, state)
+    except SystemExit as exc:
+        assert "refusing to discard trained state" in str(exc)
+    else:
+        raise AssertionError("expected nonzero legacy Q/K state to be rejected")
 
 
 def test_sequential_evaluation_is_deterministic_and_covers_each_target_once():
