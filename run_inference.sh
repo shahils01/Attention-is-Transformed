@@ -28,7 +28,7 @@ PROMPTS_FILE="${PROMPTS_FILE:-${REPO_DIR}/benchmarks/tinystories_100_prompts.jso
 DATA_DIR="${DATA_DIR:-${REPO_DIR}/data/tinystories}"
 TRAIN_DATA="${TRAIN_DATA:-${DATA_DIR}/TinyStoriesV2-GPT4-train.txt}"
 VAL_DATA="${VAL_DATA:-${DATA_DIR}/TinyStoriesV2-GPT4-valid.txt}"
-OUTPUT_DIR="${OUTPUT_DIR:-${REPO_DIR}/outputs/tinystories_all_checkpoints_100_x5_1600}"
+OUTPUT_DIR="${OUTPUT_DIR:-${REPO_DIR}/outputs/tinystories_100_x5_1600}"
 BLIND_DIR="${BLIND_DIR:-${OUTPUT_DIR}/blind_eval}"
 
 DEVICE="${DEVICE:-cuda}"
