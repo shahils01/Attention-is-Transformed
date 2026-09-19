@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
             "lgma_value_diag",
             "lgma_multibase",
             "lgma_multibase_value_diag",
+            "lgma_qk_identity",
         ],
         default="lgma",
     )

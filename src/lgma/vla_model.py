@@ -22,6 +22,7 @@ VLAAttentionType = Literal[
     "lgma_unconstrained",
     "lgma_value_diag",
     "lgma_multibase_value_diag",
+    "lgma_qk_identity",
 ]
 
 

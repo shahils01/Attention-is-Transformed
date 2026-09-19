@@ -91,6 +91,61 @@ def test_lgma_multibase_requires_heads_divisible_by_bases():
         raise AssertionError("expected ValueError")
 
 
+def test_generator_mixing_softmax_default_and_none_are_configurable():
+    softmax_layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        num_generators=3,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        use_sdpa=False,
+    )
+    raw_layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=2,
+        head_dim=4,
+        num_generators=3,
+        metric_mode="residual",
+        value_transform="lie_residual",
+        generator_mixing="none",
+        use_sdpa=False,
+    )
+    raw_layer.load_state_dict(softmax_layer.state_dict())
+
+    coordinates = torch.tensor([[1.0, -2.0, 0.5], [-0.25, 0.75, 2.0]])
+    with torch.no_grad():
+        softmax_layer.theta.copy_(coordinates)
+        softmax_layer.value_theta.copy_(coordinates)
+        raw_layer.theta.copy_(coordinates)
+        raw_layer.value_theta.copy_(coordinates)
+
+    assert torch.allclose(
+        softmax_layer.metric_theta_weights(), torch.softmax(coordinates, dim=-1)
+    )
+    assert torch.allclose(
+        softmax_layer.value_theta_weights(), torch.softmax(coordinates, dim=-1)
+    )
+    assert torch.equal(raw_layer.metric_theta_weights(), coordinates)
+    assert torch.equal(raw_layer.value_theta_weights(), coordinates)
+    assert softmax_layer.state_dict().keys() == raw_layer.state_dict().keys()
+
+
+def test_generator_mixing_rejects_unknown_mode():
+    try:
+        LieGeneratedMetricAttention(
+            16,
+            num_heads=2,
+            head_dim=4,
+            num_generators=2,
+            generator_mixing="signed_l1",
+        )
+    except ValueError as exc:
+        assert "generator_mixing" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_lgma_backward_has_finite_gradients():
     torch.manual_seed(0)
     layer = LieGeneratedMetricAttention(64, 8, 8, 4, generator_type="full")
@@ -180,6 +235,31 @@ def test_residual_metric_mode_returns_identity_plus_delta():
     delta = torch.einsum("hm,mde->hde", layer.metric_theta_weights(), generators)
     expected = torch.eye(4)[None, :, :] + 0.25 * delta
     assert torch.allclose(layer.compute_metrics(), expected, atol=1e-6)
+
+
+def test_identity_metric_fixes_scores_and_trains_residual_value_transform():
+    torch.manual_seed(0)
+    layer = LieGeneratedMetricAttention(
+        16,
+        num_heads=4,
+        head_dim=4,
+        num_generators=3,
+        metric_mode="identity",
+        value_transform="lie_residual",
+        use_sdpa=False,
+    )
+
+    expected = torch.eye(4).expand(4, 4, 4)
+    assert torch.equal(layer.compute_metrics(), expected)
+    assert not hasattr(layer, "generators")
+    assert not hasattr(layer, "theta")
+
+    output = layer(torch.randn(2, 5, 16))
+    output.square().mean().backward()
+    for parameter_name in ("value_generators", "value_theta"):
+        gradient = getattr(layer, parameter_name).grad
+        assert gradient is not None
+        assert torch.isfinite(gradient).all()
 
 
 def test_quadratic_metric_mode_returns_second_order_expansion():
@@ -827,3 +907,34 @@ def test_generator_init_scale_changes_generator_std():
         generator_init_scale=0.2,
     )
     assert large.generators.std() > small.generators.std()
+
+
+def test_fused_and_folded_checkpoint_options_preserve_outputs_and_state_keys():
+    torch.manual_seed(7)
+    common = {
+        "d_model": 32,
+        "num_heads": 4,
+        "head_dim": 8,
+        "num_generators": 3,
+        "num_base_heads": 2,
+        "metric_mode": "residual",
+        "value_transform": "lie_residual",
+        "generator_mixing": "none",
+        "dropout": 0.0,
+        "use_sdpa": False,
+    }
+    legacy = LieGeneratedMetricAttention(**common)
+    optimized = LieGeneratedMetricAttention(
+        **common,
+        fuse_base_qkv=True,
+        fold_value_transform_into_output=True,
+    )
+    optimized.load_state_dict(legacy.state_dict())
+
+    x = torch.randn(2, 6, 32)
+    with torch.no_grad():
+        legacy_output = legacy(x)
+        optimized_output = optimized(x)
+
+    assert optimized.state_dict().keys() == legacy.state_dict().keys()
+    assert torch.allclose(legacy_output, optimized_output, atol=1e-6, rtol=1e-5)

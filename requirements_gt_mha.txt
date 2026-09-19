@@ -1,0 +1,12 @@
+# GT-MHA TinyStories inference and blind-evaluation environment.
+# Tested environment: Python 3.11.14 and CUDA 12.6.
+# Install this file from the repository root.
+
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+torch==2.9.0+cu126
+numpy==2.3.3
+openai>=1.68.0,<3.0.0
+
+# Install the local lgma package and its evaluation utilities.
+-e .[eval]
