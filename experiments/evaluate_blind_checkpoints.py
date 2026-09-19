@@ -970,6 +970,41 @@ def write_scores_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     temporary.replace(path)
 
 
+def write_detailed_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write a self-contained row for every judged checkpoint continuation."""
+    fields = [
+        "blind_id",
+        "prompt_id",
+        "sample_number",
+        "theme",
+        "prompt",
+        "evaluation_notes",
+        "target_age",
+        "candidate_label",
+        "model",
+        "checkpoint",
+        "checkpoint_step",
+        "attention_type",
+        "parameters",
+        "source_seed",
+        "completion",
+        "judge_model",
+        "judge_provider",
+        *METRICS,
+        "mean_score",
+        "assessment",
+    ]
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            values = {field: row.get(field) for field in fields}
+            values["mean_score"] = row_mean_score(row)
+            writer.writerow(values)
+    temporary.replace(path)
+
+
 def write_leaderboard_csv(path: Path, summary: dict[str, Any]) -> None:
     fields = [
         "rank",
@@ -1205,8 +1240,10 @@ def unblind_command(args: argparse.Namespace) -> None:
     outputs = {
         "jsonl": args.output_dir / "unblinded_scores.jsonl",
         "scores_csv": args.output_dir / "scores.csv",
+        "detailed_csv": args.output_dir / "detailed.csv",
         "candidate_markdown": args.output_dir / "candidate_scores.md",
         "leaderboard_csv": args.output_dir / "leaderboard.csv",
+        "summary_csv": args.output_dir / "summary.csv",
         "prompt_summary_csv": args.output_dir / "prompt_summary.csv",
         "theme_summary_csv": args.output_dir / "theme_summary.csv",
         "summary_json": args.output_dir / "summary.json",
@@ -1220,10 +1257,12 @@ def unblind_command(args: argparse.Namespace) -> None:
     examples_dir.mkdir(parents=True, exist_ok=True)
     write_jsonl_atomic(outputs["jsonl"], rows)
     write_scores_csv(outputs["scores_csv"], rows)
+    write_detailed_csv(outputs["detailed_csv"], rows)
     outputs["candidate_markdown"].write_text(
         render_candidate_scores_markdown(rows), encoding="utf-8"
     )
     write_leaderboard_csv(outputs["leaderboard_csv"], summary)
+    write_leaderboard_csv(outputs["summary_csv"], summary)
     write_prompt_summary_csv(outputs["prompt_summary_csv"], summary)
     write_theme_summary_csv(outputs["theme_summary_csv"], summary)
     outputs["summary_json"].write_text(

@@ -148,6 +148,20 @@ checkpoints: sample 1 uses seeds 0-99, sample 2 uses 100-199, and so on for the
 default 100-prompt file. On DeltaAI, the equivalent batch wrapper is
 `deltaai/infer_tinystories_all_checkpoints.slurm`; it defaults to five samples.
 
+Once those checkpoint shards exist, `run_inference.sh` skips inference by
+default, merges the shards, prepares and judges the blind set, and writes the
+unblinded reports. For example:
+
+```bash
+export RCD_LLM_API_KEY=your_rcd_key_here
+OUTPUT_DIR="$PWD/outputs/tinystories_100_x5_1600" ./run_inference.sh
+```
+
+Set `NUM_EXAMPLE_PROMPTS` to change the number of prompt-comparison JSON files
+(default: 2). If judging already completed, use `RUN_JUDGE=0` to reuse
+`blind_eval/blind_scores.jsonl`. The original generation/resume stage remains
+available with `RUN_INFERENCE=1`.
+
 After generation finishes, create blind records containing every checkpoint as
 an anonymous candidate. Zero means all available prompts; pass
 `--num-prompts 30` for a smaller pilot:
@@ -188,10 +202,13 @@ python experiments/evaluate_blind_checkpoints.py unblind \
   --output-dir outputs/tinystories_all_checkpoints_100_x5/blind_eval
 ```
 
-The main reports are `leaderboard.csv`, `summary.json`, `summary.md`,
-`scores.csv`, `prompt_summary.csv`, `theme_summary.csv`, and
-`candidate_scores.md`. `prompt_summary.csv` reports the mean and sample
-variance across the five continuations for every prompt/checkpoint pair;
+The main reports are `detailed.csv`, `leaderboard.csv`, `summary.csv`,
+`summary.json`, `summary.md`, `scores.csv`, `prompt_summary.csv`,
+`theme_summary.csv`, and `candidate_scores.md`. `detailed.csv` includes the
+prompt, completion, provenance, and judge scores for every continuation;
+`summary.csv` is the model-level ranked summary. `prompt_summary.csv` reports
+the mean and sample variance across the five continuations for every
+prompt/checkpoint pair;
 `theme_summary.csv` and `leaderboard.csv` report pooled mean and sample
 variance by theme and checkpoint. Scores cover Grammar, Consistency,
 Creativity, and Plot from 1 through 10; the overall score gives those four

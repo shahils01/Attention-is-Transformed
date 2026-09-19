@@ -2,6 +2,7 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,7 @@ from evaluate_blind_checkpoints import (  # noqa: E402
     prepare_blind_rows,
     score_summary,
     single_prompt_comparison,
+    unblind_command,
     unblind_records,
     validate_score,
 )
@@ -266,3 +268,62 @@ def test_five_samples_are_blinded_separately_and_report_prompt_variance():
     assert stats["mean_score"] == 3
     assert stats["score_sample_variance"] == 2.5
     assert stats["grammar"]["sample_variance"] == 2.5
+
+
+def test_unblind_command_writes_requested_csvs_and_prompt_examples(tmp_path):
+    blind, mapping = prepare_blind_rows(
+        synthetic_matrix(), MODELS, source_run_id="run1", count=3, seed=5
+    )
+    scores = []
+    for blind_row, mapping_row in zip(blind, mapping):
+        identities = {
+            item["candidate_id"]: item["model"] for item in mapping_row["candidates"]
+        }
+        scores.append(
+            {
+                "blind_id": blind_row["blind_id"],
+                "blind_record_sha256": canonical_hash(blind_row),
+                "scores": {
+                    candidate_id: score(MODELS.index(model) + 6)
+                    for candidate_id, model in identities.items()
+                },
+            }
+        )
+
+    def write_jsonl(path, rows):
+        path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+
+    blind_path = tmp_path / "blind.jsonl"
+    mapping_path = tmp_path / "mapping.jsonl"
+    scores_path = tmp_path / "scores.jsonl"
+    output_dir = tmp_path / "reports"
+    write_jsonl(blind_path, blind)
+    write_jsonl(mapping_path, mapping)
+    write_jsonl(scores_path, scores)
+
+    unblind_command(
+        SimpleNamespace(
+            blind_file=blind_path,
+            mapping_file=mapping_path,
+            scores_file=scores_path,
+            output_dir=output_dir,
+            num_example_prompts=2,
+            example_prompt_id=None,
+            example_output=None,
+            examples_dir=None,
+            overwrite=False,
+        )
+    )
+
+    assert (output_dir / "detailed.csv").is_file()
+    assert (output_dir / "leaderboard.csv").read_text(encoding="utf-8") == (
+        output_dir / "summary.csv"
+    ).read_text(encoding="utf-8")
+    prompt_manifest = json.loads(
+        (output_dir / "prompt_comparisons" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert prompt_manifest["count"] == 2
