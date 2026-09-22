@@ -1,14 +1,24 @@
+numpy
 torch
 
 [data]
 datasets
 huggingface_hub
+pyarrow
+tokenizers
 
 [dev]
 pytest
 
 [eval]
+imageio
 openai
+tqdm
 
 [tracking]
 wandb
+
+[vla]
+h5py
+numpy
+pillow

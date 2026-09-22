@@ -57,6 +57,7 @@ ATTENTION_TYPES = [
     "lgma_value_diag",
     "lgma_multibase",
     "lgma_multibase_value_diag",
+    "lgma_qk_identity",
 ]
 GENERATOR_TYPES = ["full", "diagonal", "symmetric"]
 

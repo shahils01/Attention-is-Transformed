@@ -19,6 +19,30 @@ from lgma.transformer import TinyTransformerLM
 
 
 DEFAULT_STOP_SEQUENCE = "<|endoftext|>"
+_TOKENIZER_CACHE: dict[tuple[tuple[str, int, int], ...], CharTokenizer] = {}
+
+
+def adapt_tinystories_state_dict(
+    config: dict[str, object], state: dict[str, object]
+) -> dict[str, object]:
+    """Remove provably unused legacy tensors from scoring-identity checkpoints.
+
+    The original TinyStories Q/K-identity trainer retained zero-valued Q/K
+    generator placeholders. The clean architecture on ``origin/bert-identity``
+    has no such parameters because its scoring metric is fixed to identity.
+    """
+    if config.get("attention_type") != "lgma_qk_identity":
+        return state
+    legacy_suffixes = (".attn.generators", ".attn.theta")
+    legacy_keys = [key for key in state if key.endswith(legacy_suffixes)]
+    for key in legacy_keys:
+        value = state[key]
+        if not isinstance(value, torch.Tensor) or torch.count_nonzero(value).item() != 0:
+            raise SystemExit(
+                "lgma_qk_identity checkpoint contains a nonzero legacy Q/K tensor "
+                f"({key}); refusing to discard trained state"
+            )
+    return {key: value for key, value in state.items() if key not in legacy_keys}
 
 
 def read_texts(data_path: Path, val_data_path: Path | None) -> tuple[str, str | None]:
@@ -31,6 +55,32 @@ def build_tokenizer(train_text: str, val_text: str | None) -> CharTokenizer:
     if val_text is None:
         return CharTokenizer(train_text)
     return CharTokenizer(train_text + val_text)
+
+
+def build_tokenizer_from_files(*paths: Path | None) -> CharTokenizer:
+    """Recreate the character vocabulary without retaining the corpus in memory."""
+    existing_paths = [path for path in paths if path is not None]
+    cache_key = tuple(
+        (
+            str(path.resolve()),
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+        )
+        for path in existing_paths
+    )
+    cached = _TOKENIZER_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    chars: set[str] = set()
+    for path in existing_paths:
+        with path.open("r", encoding="utf-8") as handle:
+            while chunk := handle.read(1024 * 1024):
+                chars.update(chunk)
+    if not chars:
+        raise SystemExit("the tokenizer source files contain no text")
+    tokenizer = CharTokenizer("".join(chars))
+    _TOKENIZER_CACHE[cache_key] = tokenizer
+    return tokenizer
 
 
 def paths_from_checkpoint(
@@ -72,9 +122,52 @@ def load_tinystories_checkpoint(
     state = checkpoint.get("model_state")
     if not isinstance(state, dict):
         raise SystemExit("checkpoint is missing model_state")
-    model.load_state_dict(state)
+    model.load_state_dict(adapt_tinystories_state_dict(config, state))
     model.eval()
     return model, tokenizer, train_encoded, val_encoded, config, int(checkpoint.get("step", 0))
+
+
+def load_tinystories_generation_checkpoint(
+    checkpoint_path: Path,
+    device: torch.device,
+    data_path: Path | None = None,
+    val_data_path: Path | None = None,
+) -> tuple[TinyTransformerLM, CharTokenizer, dict[str, object], int]:
+    """Load only what generation needs from a full trainer checkpoint.
+
+    Trainer checkpoints also contain large optimizer states. They are memory
+    mapped on CPU rather than copied to the GPU, and the corpus is scanned only
+    for its character vocabulary instead of being fully tokenized.
+    """
+    checkpoint = load_full_checkpoint(
+        checkpoint_path,
+        map_location="cpu",
+        mmap=True,
+    )
+    train_path, val_path = paths_from_checkpoint(checkpoint, data_path, val_data_path)
+    tokenizer = build_tokenizer_from_files(train_path, val_path)
+
+    config = checkpoint.get("model_config")
+    if not isinstance(config, dict):
+        raise SystemExit("checkpoint is missing model_config")
+    state = checkpoint.get("model_state")
+    if not isinstance(state, dict):
+        raise SystemExit("checkpoint is missing model_state")
+    embedding = state.get("token_embedding.weight")
+    if not isinstance(embedding, torch.Tensor):
+        raise SystemExit("checkpoint model_state is missing token_embedding.weight")
+    expected_vocab_size = int(embedding.shape[0])
+    if tokenizer.vocab_size != expected_vocab_size:
+        raise SystemExit(
+            "tokenizer vocabulary mismatch: checkpoint expects "
+            f"{expected_vocab_size} characters but the supplied corpus has "
+            f"{tokenizer.vocab_size}"
+        )
+
+    model = TinyTransformerLM(vocab_size=tokenizer.vocab_size, **config).to(device)
+    model.load_state_dict(adapt_tinystories_state_dict(config, state))
+    model.eval()
+    return model, tokenizer, config, int(checkpoint.get("step", 0))
 
 
 @torch.no_grad()

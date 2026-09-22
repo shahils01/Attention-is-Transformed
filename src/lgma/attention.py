@@ -53,6 +53,7 @@ class LieGeneratedMetricAttention(nn.Module):
         dropout: float = 0.0,
         bias: bool = False,
         generator_type: str = "full",
+        generator_mixing: str = "softmax",
         use_sdpa: bool = True,
         causal: bool = False,
         stabilize_generators: bool = True,
@@ -72,13 +73,18 @@ class LieGeneratedMetricAttention(nn.Module):
         learn_head_temperature: bool = False,
         value_transform: str = "none",
         num_base_heads: int = 1,
+        fuse_base_qkv: bool = False,
+        fold_value_transform_into_output: bool = False,
+        sdpa_gqa_mode: str = "auto",
     ) -> None:
         super().__init__()
         if d_model <= 0 or num_heads <= 0 or head_dim <= 0 or num_generators <= 0:
             raise ValueError("d_model, num_heads, head_dim, and num_generators must be positive")
         if generator_type not in {"full", "diagonal", "symmetric"}:
             raise ValueError(f"unsupported generator_type: {generator_type}")
-        if metric_mode not in {"exp", "residual", "quadratic", "unconstrained"}:
+        if generator_mixing not in {"softmax", "none"}:
+            raise ValueError(f"unsupported generator_mixing: {generator_mixing}")
+        if metric_mode not in {"identity", "exp", "residual", "quadratic", "unconstrained"}:
             raise ValueError(f"unsupported metric_mode: {metric_mode}")
         if theta_init not in {"random_sphere", "circle"}:
             raise ValueError(f"unsupported theta_init: {theta_init}")
@@ -114,6 +120,8 @@ class LieGeneratedMetricAttention(nn.Module):
             raise ValueError("num_base_heads must be positive")
         if num_heads % num_base_heads != 0:
             raise ValueError("num_heads must be divisible by num_base_heads")
+        if sdpa_gqa_mode not in {"auto", "native", "expand"}:
+            raise ValueError("sdpa_gqa_mode must be one of: auto, native, expand")
 
         self.d_model = d_model
         self.num_heads = num_heads
@@ -127,6 +135,7 @@ class LieGeneratedMetricAttention(nn.Module):
         self.num_generators = num_generators
         self.dropout = dropout
         self.generator_type = generator_type
+        self.generator_mixing = generator_mixing
         self.use_sdpa = use_sdpa
         self.causal = causal
         self.stabilize_generators = stabilize_generators
@@ -144,6 +153,9 @@ class LieGeneratedMetricAttention(nn.Module):
         self.learn_head_temperature = learn_head_temperature
         self.value_transform = value_transform
         self.value_transform_mode = self._resolve_value_transform_mode(value_transform, metric_mode)
+        self.fuse_base_qkv = fuse_base_qkv
+        self.fold_value_transform_into_output = fold_value_transform_into_output
+        self.sdpa_gqa_mode = sdpa_gqa_mode
 
         self.q_proj = nn.Linear(d_model, self.num_base_heads * self.base_dim, bias=bias)
         self.k_proj = nn.Linear(d_model, self.num_base_heads * self.base_dim, bias=bias)
@@ -153,11 +165,13 @@ class LieGeneratedMetricAttention(nn.Module):
 
         if metric_mode == "unconstrained":
             self.raw_metrics = nn.Parameter(torch.empty(num_heads, self.base_dim, self.base_dim))
+        elif metric_mode == "identity":
+            pass
         elif generator_type == "diagonal":
             self.generators = nn.Parameter(torch.empty(num_generators, self.base_dim))
         else:
             self.generators = nn.Parameter(torch.empty(num_generators, self.base_dim, self.base_dim))
-        if metric_mode != "unconstrained":
+        if metric_mode not in {"identity", "unconstrained"}:
             self.theta = nn.Parameter(torch.empty(num_heads, num_generators))
         if learn_head_temperature:
             self.head_logit_scale = nn.Parameter(torch.ones(num_heads))
@@ -191,7 +205,7 @@ class LieGeneratedMetricAttention(nn.Module):
 
         if self.metric_mode == "unconstrained":
             nn.init.zeros_(self.raw_metrics)
-        else:
+        elif self.metric_mode != "identity":
             generator_std = self.generator_init_scale / math.sqrt(self.base_dim)
             nn.init.normal_(self.generators, mean=0.0, std=generator_std)
             self._init_theta()
@@ -299,6 +313,14 @@ class LieGeneratedMetricAttention(nn.Module):
 
     def compute_head_generators(self) -> torch.Tensor:
         """Return dense per-head A_h generators after applying metric_beta."""
+        if self.metric_mode == "identity":
+            return torch.zeros(
+                self.num_heads,
+                self.base_dim,
+                self.base_dim,
+                device=self.q_proj.weight.device,
+                dtype=self.q_proj.weight.dtype,
+            )
         if self.metric_mode == "unconstrained":
             return self.metric_beta * self.raw_metrics
         if self.generator_type == "diagonal":
@@ -338,7 +360,10 @@ class LieGeneratedMetricAttention(nn.Module):
 
     def pre_cap_head_generator_symmetric_norms(self) -> torch.Tensor | None:
         """Return per-head symmetric norms before applying the configured cap."""
-        if self.head_generator_symmetric_cap is None or self.metric_mode == "unconstrained":
+        if self.head_generator_symmetric_cap is None or self.metric_mode in {
+            "identity",
+            "unconstrained",
+        }:
             return None
         if self.generator_type == "diagonal":
             diagonal = torch.einsum(
@@ -359,16 +384,21 @@ class LieGeneratedMetricAttention(nn.Module):
         return symmetric.float().norm(dim=(-2, -1))
 
     def metric_theta_weights(self) -> torch.Tensor:
-        """Return simplex-normalized generator weights for each metric head."""
+        """Return configured generator coefficients for each metric head."""
         if not hasattr(self, "theta"):
             raise AttributeError("unconstrained metric mode does not use theta")
-        return torch.softmax(self.theta, dim=-1)
+        return self._generator_mixing_weights(self.theta)
 
     def value_theta_weights(self) -> torch.Tensor:
-        """Return simplex-normalized generator weights for each value head."""
+        """Return configured generator coefficients for each value head."""
         if not hasattr(self, "value_theta"):
             raise AttributeError("value transform mode does not use value_theta")
-        return torch.softmax(self.value_theta, dim=-1)
+        return self._generator_mixing_weights(self.value_theta)
+
+    def _generator_mixing_weights(self, coordinates: torch.Tensor) -> torch.Tensor:
+        if self.generator_mixing == "softmax":
+            return torch.softmax(coordinates, dim=-1)
+        return coordinates
 
     def _clip_metric_singular_values(self, metrics: torch.Tensor) -> torch.Tensor:
         if self.metric_clip_min is None and self.metric_clip_max is None:
@@ -383,6 +413,13 @@ class LieGeneratedMetricAttention(nn.Module):
         return clipped_metrics.to(dtype=metrics.dtype)
 
     def compute_metrics(self) -> torch.Tensor:
+        if self.metric_mode == "identity":
+            eye = torch.eye(
+                self.base_dim,
+                device=self.q_proj.weight.device,
+                dtype=self.q_proj.weight.dtype,
+            )
+            return eye[None, :, :].expand(self.num_heads, self.base_dim, self.base_dim)
         if self.metric_mode == "unconstrained":
             eye = torch.eye(self.base_dim, device=self.raw_metrics.device, dtype=self.raw_metrics.dtype)
             metrics = eye[None, :, :] + self.metric_beta * self.raw_metrics
@@ -423,6 +460,14 @@ class LieGeneratedMetricAttention(nn.Module):
 
     def effective_generators(self) -> torch.Tensor:
         """Return dense stabilized generator basis for diagnostics."""
+        if self.metric_mode == "identity":
+            return torch.empty(
+                0,
+                self.base_dim,
+                self.base_dim,
+                device=self.q_proj.weight.device,
+                dtype=self.q_proj.weight.dtype,
+            )
         if self.metric_mode == "unconstrained":
             return self.raw_metrics
         return self._dense_generators()
@@ -482,6 +527,21 @@ class LieGeneratedMetricAttention(nn.Module):
         return torch.linalg.matrix_exp(head_generators.float()).to(dtype=head_generators.dtype)
 
     def _project(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.fuse_base_qkv:
+            # Keep the original Parameters and state-dict keys while issuing a
+            # single projection during self-attention inference/training.
+            weight = torch.cat(
+                (self.q_proj.weight, self.k_proj.weight, self.v_proj.weight), dim=0
+            )
+            bias = None
+            if self.q_proj.bias is not None:
+                bias = torch.cat(
+                    (self.q_proj.bias, self.k_proj.bias, self.v_proj.bias), dim=0
+                )
+            qkv = F.linear(x, weight, bias)
+            qk_width = self.num_base_heads * self.base_dim
+            value_width = self.num_base_heads * self.value_dim
+            return torch.split(qkv, (qk_width, qk_width, value_width), dim=-1)
         return self.q_proj(x), self.k_proj(x), self.v_proj(x)
 
     def _reshape_base_qk(self, tensor: torch.Tensor) -> torch.Tensor:
@@ -511,7 +571,7 @@ class LieGeneratedMetricAttention(nn.Module):
         if (
             metrics is None
             and self.generator_type == "diagonal"
-            and self.metric_mode != "unconstrained"
+            and self.metric_mode not in {"identity", "unconstrained"}
             and self.metric_clip_min is None
             and self.metric_clip_max is None
         ):
@@ -630,6 +690,33 @@ class LieGeneratedMetricAttention(nn.Module):
             values = values * self.value_scale[None, :, None, :]
         return values
 
+    def _output_projection(self, out_heads: torch.Tensor) -> torch.Tensor:
+        """Apply value transforms and output projection, optionally folded."""
+        batch, _, seq_len, _ = out_heads.shape
+        if (
+            not self.fold_value_transform_into_output
+            or self.value_transform_mode == "none"
+        ):
+            transformed = self._apply_value_transforms_to_outputs(out_heads)
+            flat = transformed.transpose(1, 2).contiguous().view(
+                batch, seq_len, self.num_heads * self.value_dim
+            )
+            return self.out_proj(flat)
+
+        # For row-vector outputs Z_h and transforms R_h,
+        # (Z_h R_h) W_h = Z_h (R_h W_h), so this is algebraically exact.
+        transforms = self.compute_value_transforms()
+        weight_blocks = self.out_proj.weight.view(
+            self.d_model, self.num_heads, self.value_dim
+        )
+        effective_weight = torch.einsum(
+            "hde,ohe->ohd", transforms, weight_blocks
+        ).reshape(self.d_model, self.num_heads * self.value_dim)
+        flat = out_heads.transpose(1, 2).contiguous().view(
+            batch, seq_len, self.num_heads * self.value_dim
+        )
+        return F.linear(flat, effective_weight, self.out_proj.bias)
+
     def _expand_keys(self, k: torch.Tensor) -> torch.Tensor:
         if k.ndim == 3:
             keys = self._reshape_base_qk(k)
@@ -712,7 +799,6 @@ class LieGeneratedMetricAttention(nn.Module):
         attn = torch.softmax(scores, dim=-1)
         attn = self.attn_dropout(attn)
         out_heads = torch.einsum("bhts,bhsd->bhtd", attn, self._expand_values(v))
-        out_heads = self._apply_value_transforms_to_outputs(out_heads)
         return out_heads, attn
 
     def _sdpa_attention(
@@ -783,6 +869,27 @@ class LieGeneratedMetricAttention(nn.Module):
                 is_causal=is_causal,
                 scale=sdpa_scale,
             )
+        elif self.sdpa_gqa_mode == "expand":
+            out_heads = F.scaled_dot_product_attention(
+                q_metric,
+                self._expand_keys(k_base),
+                self._expand_values(v_base),
+                attn_mask=sdpa_mask,
+                dropout_p=dropout_p,
+                is_causal=is_causal,
+                scale=sdpa_scale,
+            )
+        elif self.sdpa_gqa_mode == "native":
+            out_heads = F.scaled_dot_product_attention(
+                q_metric,
+                k_base,
+                v_base,
+                attn_mask=sdpa_mask,
+                dropout_p=dropout_p,
+                is_causal=is_causal,
+                scale=sdpa_scale,
+                enable_gqa=True,
+            )
         else:
             try:
                 out_heads = F.scaled_dot_product_attention(
@@ -807,7 +914,7 @@ class LieGeneratedMetricAttention(nn.Module):
                     is_causal=is_causal,
                     scale=sdpa_scale,
                 )
-        return self._apply_value_transforms_to_outputs(out_heads)
+        return out_heads
 
     @staticmethod
     def _prepare_sdpa_mask(
@@ -859,10 +966,7 @@ class LieGeneratedMetricAttention(nn.Module):
         else:
             out_heads, attn = self._explicit_attention(q, k, v, attn_mask, key_padding_mask)
 
-        batch, _, seq_len, _ = out_heads.shape
-        out_heads = out_heads.transpose(1, 2).contiguous()
-        out_heads = out_heads.view(batch, seq_len, self.num_heads * self.value_dim)
-        out = self.out_proj(out_heads)
+        out = self._output_projection(out_heads)
         if need_weights and attn is None:
             raise RuntimeError("attention weights unavailable on SDPA path")
         if need_weights and use_cache:

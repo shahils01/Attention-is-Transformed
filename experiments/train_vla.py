@@ -42,6 +42,7 @@ ATTENTION_CHOICES = (
     "lgma_unconstrained",
     "lgma_value_diag",
     "lgma_multibase_value_diag",
+    "lgma_qk_identity",
 )
 GENERATOR_TYPES = ("full", "diagonal", "symmetric")
 VALUE_TRANSFORMS = (
