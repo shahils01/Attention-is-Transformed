@@ -1,0 +1,6 @@
+% Suggested caption. Export the SVG as vector PDF from Illustrator for Overleaf.
+\caption{\textbf{Group-transformed multi-head attention.}
+(a) $C$ learned base projection triples supply $H$ attention heads through a fixed head-to-base assignment. Each head applies a query--key transformation $M_h$ when forming attention weights and a value transformation $R_h^V$ after aggregation; concatenation and output projection retain the standard multi-head interface.
+(b) Separate shared generator banks and head-specific mixing coefficients construct the query--key and value transformations. Here $B_h$, $F_\ell$, $\rho_h$, and $\phi_h$ denote the value-path counterparts of $A_h$, $E_\ell$, $\pi_h$, and $\theta_h$; $\beta$ and $\beta_V$ are their scaling factors.
+(c) Schematic geometric interpretation of the exact exponential map from the Lie algebra to $\mathrm{GL}^{+}(d_h,\mathbb{R})$. The residual formulation $I+A$ is a computational alternative and is not guaranteed to remain in this group. The schematic does not imply that the head transformations lie on a common trajectory.}
+\label{fig:gt-mha-architecture}

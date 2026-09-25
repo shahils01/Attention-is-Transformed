@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{GLUE validation performance across fine-tuning seeds at the learning rate selected for each method and task. Scores are mean $\pm$ sample standard deviation over seeds 42--46, except WNLI (seed 42 only). MRPC and QQP average accuracy and F1; STS-B averages Pearson and Spearman correlations; MNLI reports matched accuracy. All scores are percentages. Learning rates were selected using validation means over seeds 42--44; these statistics characterize fine-tuning variability conditional on a selected pretrained encoder.}
+\label{tab:glue-validation-seeds}
+\small
+\resizebox{\linewidth}{!}{%
+% Requires booktabs. Scores in percentage points; sample SD.
+\begin{tabular}{lccccccccc}
+\toprule
+Method & COLA & SST2 & MRPC & STSB & QQP & MNLI & QNLI & RTE & WNLI \\
+\midrule
+MHA & $32.09 \pm 2.35$ & $87.50 \pm 0.23$ & $82.40 \pm 1.00$ & $84.75 \pm 0.52$ & $87.66 \pm 0.11$ & $77.23 \pm 0.23$ & $86.12 \pm 0.27$ & $55.45 \pm 1.29$ & $56.34$ \\
+GQA & $32.01 \pm 1.33$ & $87.55 \pm 0.22$ & $83.66 \pm 1.02$ & $78.18 \pm 3.20$ & $87.23 \pm 0.15$ & $76.98 \pm 0.18$ & $85.48 \pm 0.43$ & $57.04 \pm 2.77$ & $56.34$ \\
+Collaborative MHA & $35.68 \pm 2.19$ & $88.10 \pm 0.27$ & $78.27 \pm 0.75$ & $79.93 \pm 0.65$ & $86.53 \pm 0.04$ & $75.22 \pm 0.28$ & $84.13 \pm 1.12$ & $54.58 \pm 1.18$ & $56.34$ \\
+GT-MHA & $33.73 \pm 1.15$ & $87.59 \pm 0.73$ & $79.84 \pm 0.36$ & $83.23 \pm 0.57$ & $87.61 \pm 0.09$ & $77.61 \pm 0.12$ & $85.76 \pm 0.40$ & $56.53 \pm 1.72$ & $56.34$ \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
