@@ -31,15 +31,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--model_label", default=None)
-    parser.add_argument(
-        "--attention_type_override",
-        choices=["gt_mha_residual", "gt_mha_quadratic", "gt_mha_exact"],
-        default=None,
-        help=(
-            "Benchmark a compatible GT-MHA mapping with the checkpoint's learned "
-            "parameters. This changes only the transformation map used at runtime."
-        ),
-    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--precision", choices=["fp32", "bf16", "fp16"], default="bf16")
     parser.add_argument("--batch_size", type=int, default=8)
@@ -105,18 +96,6 @@ def main() -> None:
     if not isinstance(config, dict) or not isinstance(model_state, dict):
         raise SystemExit("checkpoint must contain model_config and model_state")
     config = dict(config)
-    if args.attention_type_override is not None:
-        checkpoint_attention_type = config.get("attention_type")
-        if checkpoint_attention_type not in {
-            "gt_mha_residual",
-            "gt_mha_quadratic",
-            "gt_mha_exact",
-        }:
-            raise SystemExit(
-                "--attention_type_override requires a compatible GT-MHA checkpoint; "
-                f"found {checkpoint_attention_type!r}"
-            )
-        config["attention_type"] = args.attention_type_override
     config.update(
         {
             "fuse_base_qkv": args.fuse_base_qkv,
@@ -192,10 +171,6 @@ def main() -> None:
         "schema_version": 2,
         "protocol": "tinystories_matched_single_gpu_training_v1",
         "model_label": args.model_label,
-        "checkpoint_attention_type": checkpoint.get("model_config", {}).get(
-            "attention_type"
-        ),
-        "benchmarked_attention_type": config.get("attention_type"),
         "checkpoint": str(args.checkpoint),
         "checkpoint_step": int(checkpoint.get("step", 0)),
         "batch_size": args.batch_size,
