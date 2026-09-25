@@ -27,6 +27,8 @@ METHODS = {
     "GQA": "gqa",
     "Collaborative MHA": "collaborative",
     "GT-MHA": "gt_mha_residual",
+    "GT-MHA (quadratic)": "gt_mha_quadratic",
+    "GT-MHA (exact exponential)": "gt_mha_exact",
 }
 
 
