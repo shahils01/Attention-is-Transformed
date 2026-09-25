@@ -18,7 +18,7 @@ ROOT=/work/hdd/biad/sshaik4/lgma_jobs/paper_efficiency_20260924
 OUT=${ROOT}/results/bert_transformation_training
 
 module load python/miniforge3_pytorch/2.12.0
-source /work/hdd/biad/sshaik4/venvs/lgma-clean/bin/activate
+PYTHON=/sw/user/python/miniforge3-pytorch-2.12.0/bin/python
 export PYTHONPATH="${ROOT}/src"
 export HF_HOME=/work/hdd/biad/sshaik4/lgma_data/.hf_cache
 export HF_HUB_CACHE="${HF_HOME}/hub"
@@ -33,7 +33,7 @@ mkdir -p "${OUT}" "${ROOT}/logs"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
 # Fail early if any transformation cannot complete a forward/backward/update step.
-python "${ROOT}/experiments/benchmark_bert_training_efficiency.py" \
+"${PYTHON}" "${ROOT}/experiments/benchmark_bert_training_efficiency.py" \
     --methods "MHA" "GT-MHA" "GT-MHA (quadratic)" "GT-MHA (exact exponential)" \
     --batch_size 2 --sequence_length 128 --gradient_accumulation_steps 1 \
     --precision bf16 --use_sdpa --warmup 0 --repeats 1 \
@@ -42,7 +42,7 @@ python "${ROOT}/experiments/benchmark_bert_training_efficiency.py" \
 run_round() {
     local round=$1
     shift
-    python "${ROOT}/experiments/benchmark_bert_training_efficiency.py" \
+    "${PYTHON}" "${ROOT}/experiments/benchmark_bert_training_efficiency.py" \
         --methods "$@" \
         --batch_size 32 --sequence_length 128 --gradient_accumulation_steps 2 \
         --precision bf16 --use_sdpa --warmup 3 --repeats 10 \
@@ -56,7 +56,7 @@ run_round 04 "GT-MHA (exact exponential)" "MHA" "GT-MHA" "GT-MHA (quadratic)"
 
 # Keep profiler overhead outside the timed rounds. Operator FLOPs can omit
 # fused SDPA and custom kernels; report them as a secondary diagnostic.
-python "${ROOT}/experiments/benchmark_bert_training_efficiency.py" \
+"${PYTHON}" "${ROOT}/experiments/benchmark_bert_training_efficiency.py" \
     --methods "MHA" "GT-MHA" "GT-MHA (quadratic)" "GT-MHA (exact exponential)" \
     --batch_size 32 --sequence_length 128 --gradient_accumulation_steps 2 \
     --precision bf16 --use_sdpa --warmup 1 --repeats 1 --profile_flops \
