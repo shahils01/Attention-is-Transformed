@@ -31,6 +31,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--precision", choices=["fp32", "bf16", "fp16"], default="bf16")
     parser.add_argument(
+        "--cache_mode", choices=["static", "dynamic"], default="static",
+        help="Static preallocates K/V storage; dynamic concatenates on every decode step.",
+    )
+    parser.add_argument(
         "--fuse_base_qkv",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -100,9 +104,15 @@ def prefill_once(
     precision: str,
     *,
     use_cache: bool = False,
+    cache_mode: str = "dynamic",
 ):
     with precision_context(device, precision):
-        return model(input_ids, use_cache=use_cache)
+        cache = (
+            model.allocate_kv_cache(batch_size=input_ids.shape[0])
+            if use_cache and cache_mode == "static"
+            else None
+        )
+        return model(input_ids, past_key_values=cache, use_cache=use_cache)
 
 
 @torch.no_grad()
@@ -131,6 +141,7 @@ def prepare_cached_decode(
     prompt: torch.Tensor,
     device: torch.device,
     precision: str,
+    cache_mode: str = "dynamic",
 ) -> tuple[torch.Tensor, object]:
     logits, past_key_values = prefill_once(
         model,
@@ -138,6 +149,7 @@ def prepare_cached_decode(
         device,
         precision,
         use_cache=True,
+        cache_mode=cache_mode,
     )
     next_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
     return next_id, past_key_values
@@ -148,6 +160,15 @@ def cache_num_bytes(past_key_values) -> int:
         tensor.numel() * tensor.element_size()
         for layer_cache in past_key_values
         for tensor in layer_cache
+    )
+
+
+def cache_allocated_bytes(past_key_values) -> int:
+    return sum(
+        layer_cache.allocated_bytes
+        if hasattr(layer_cache, "allocated_bytes")
+        else sum(t.numel() * t.element_size() for t in layer_cache)
+        for layer_cache in past_key_values
     )
 
 
@@ -178,6 +199,7 @@ def benchmark_context(
     device: torch.device,
     precision: str,
     profile_flops: bool = False,
+    cache_mode: str = "static",
 ) -> dict[str, Any]:
     if context_length + decode_tokens > model.context_length:
         raise ValueError(
@@ -186,7 +208,9 @@ def benchmark_context(
         )
     prompt = encoded[:context_length].unsqueeze(0).repeat(batch_size, 1).to(device)
     for _ in range(warmup):
-        next_id, past_key_values = prepare_cached_decode(model, prompt, device, precision)
+        next_id, past_key_values = prepare_cached_decode(
+            model, prompt, device, precision, cache_mode
+        )
         _, warmup_cache = decode_once(
             model,
             next_id,
@@ -204,7 +228,7 @@ def benchmark_context(
     for _ in range(repeats):
         synchronize(device)
         started = time.perf_counter()
-        prefill_once(model, prompt, device, precision, use_cache=True)
+        prefill_once(model, prompt, device, precision, use_cache=True, cache_mode=cache_mode)
         synchronize(device)
         prefill_times.append(time.perf_counter() - started)
 
@@ -213,7 +237,9 @@ def benchmark_context(
     for _ in range(repeats):
         if final_past_key_values is not None:
             del final_past_key_values
-        next_id, past_key_values = prepare_cached_decode(model, prompt, device, precision)
+        next_id, past_key_values = prepare_cached_decode(
+            model, prompt, device, precision, cache_mode
+        )
         synchronize(device)
         started = time.perf_counter()
         _, final_past_key_values = decode_once(
@@ -241,6 +267,7 @@ def benchmark_context(
         dtype=dtype,
     )
     measured_cache_bytes = cache_num_bytes(final_past_key_values)
+    allocated_cache_bytes = cache_allocated_bytes(final_past_key_values)
     measured_cache_bytes_per_token_per_layer = measured_cache_bytes // (
         batch_size * (context_length + decode_tokens) * len(model.blocks)
     )
@@ -259,6 +286,7 @@ def benchmark_context(
             "mode": "prefill_then_kv_cached_autoregressive_decode",
             "cache_length": context_length + decode_tokens,
             "measured_kv_cache_bytes": measured_cache_bytes,
+            "allocated_kv_cache_bytes": allocated_cache_bytes,
             "measured_kv_cache_bytes_per_token_per_layer": (
                 measured_cache_bytes_per_token_per_layer
             ),
@@ -290,6 +318,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "decode_median_ms_per_token",
         "decode_tokens_per_second",
         "measured_kv_cache_bytes",
+        "allocated_kv_cache_bytes",
         "measured_kv_cache_bytes_per_token_per_layer",
         "peak_memory_allocated_gib",
         "peak_memory_reserved_gib",
@@ -313,6 +342,9 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                     "decode_tokens_per_second": result["decode"]["tokens_per_second"],
                     "measured_kv_cache_bytes": result["decode"][
                         "measured_kv_cache_bytes"
+                    ],
+                    "allocated_kv_cache_bytes": result["decode"][
+                        "allocated_kv_cache_bytes"
                     ],
                     "measured_kv_cache_bytes_per_token_per_layer": result["decode"][
                         "measured_kv_cache_bytes_per_token_per_layer"
@@ -386,6 +418,7 @@ def main() -> None:
             device,
             args.precision,
             args.profile_flops,
+            args.cache_mode,
         )
         for context_length in context_lengths
     ]
@@ -397,6 +430,7 @@ def main() -> None:
         "parameters": count_parameters(model),
         "device": str(device),
         "precision": args.precision,
+        "cache_mode": args.cache_mode,
         "warmup": args.warmup,
         "optimized_execution": config_overrides,
         "compiled": args.compile,

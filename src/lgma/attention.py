@@ -7,6 +7,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from lgma.kv_cache import StaticKVCache
+
 warnings.filterwarnings(
     "ignore",
     message=r".*An output with one or more elements was resized.*",
@@ -20,7 +22,7 @@ def _negative_large(dtype: torch.dtype) -> float:
     return -1e9
 
 
-KVCache = tuple[torch.Tensor, torch.Tensor]
+KVCache = tuple[torch.Tensor, torch.Tensor] | StaticKVCache
 
 
 def _append_base_cache(
@@ -29,6 +31,8 @@ def _append_base_cache(
     past_key_value: KVCache | None,
 ) -> KVCache:
     """Append base K/V tensors stored as [batch, bases, time, dim]."""
+    if isinstance(past_key_value, StaticKVCache):
+        return past_key_value.append(key, value)
     if past_key_value is None:
         return key, value
     past_key, past_value = past_key_value
@@ -1025,7 +1029,7 @@ class LieGeneratedMetricAttention(nn.Module):
         k_base_new = self._reshape_base_qk(k_new)
         v_base_new = self._reshape_base_values(v_new)
         k, v = _append_base_cache(k_base_new, v_base_new, past_key_value)
-        present_key_value = (k, v)
+        present_key_value = past_key_value if isinstance(past_key_value, StaticKVCache) else (k, v)
         if self.use_sdpa and not need_weights:
             out_heads = self._sdpa_attention(q, k, v, attn_mask, key_padding_mask)
             attn = None

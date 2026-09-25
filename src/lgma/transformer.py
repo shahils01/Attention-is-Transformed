@@ -9,6 +9,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from lgma.attention import LieGeneratedMetricAttention
+from lgma.kv_cache import StaticKVCache
 from lgma.baselines import (
     CollaborativeAttention,
     GroupedQueryAttention,
@@ -91,7 +92,7 @@ def validate_paper_gt_mha_module(module: nn.Module) -> None:
     if mismatches:
         raise ValueError("paper GT-MHA module mismatch: " + "; ".join(mismatches))
 
-KVCache = tuple[torch.Tensor, torch.Tensor]
+KVCache = tuple[torch.Tensor, torch.Tensor] | StaticKVCache
 ModelKVCache = tuple[KVCache, ...]
 
 
@@ -450,6 +451,15 @@ class TinyTransformerLM(nn.Module):
     def first_attention(self) -> nn.Module:
         return self.blocks[0].attn
 
+    def allocate_kv_cache(
+        self, batch_size: int, max_length: int | None = None
+    ) -> ModelKVCache:
+        """Create per-layer cache buffers for repeated inference-only decoding."""
+        capacity = self.context_length if max_length is None else max_length
+        if capacity > self.context_length:
+            raise ValueError("max_length exceeds the model context_length")
+        return tuple(StaticKVCache(batch_size, capacity) for _ in self.blocks)
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -468,9 +478,22 @@ class TinyTransformerLM(nn.Module):
         batch, seq_len = input_ids.shape
         past_length = 0
         if past_key_values:
-            past_length = past_key_values[0][0].shape[-2]
+            first_cache = past_key_values[0]
+            past_length = (
+                first_cache.length
+                if isinstance(first_cache, StaticKVCache)
+                else first_cache[0].shape[-2]
+            )
             for layer_cache in past_key_values:
-                if layer_cache[0].shape[-2] != past_length or layer_cache[1].shape[-2] != past_length:
+                layer_length = (
+                    layer_cache.length
+                    if isinstance(layer_cache, StaticKVCache)
+                    else layer_cache[0].shape[-2]
+                )
+                if layer_length != past_length or (
+                    not isinstance(layer_cache, StaticKVCache)
+                    and layer_cache[1].shape[-2] != past_length
+                ):
                     raise ValueError("all layer caches must have the same sequence length")
         if past_length + seq_len > self.context_length:
             raise ValueError(

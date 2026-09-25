@@ -7,9 +7,10 @@ from torch import nn
 import torch.nn.functional as F
 
 from lgma.attention import _negative_large
+from lgma.kv_cache import StaticKVCache
 
 
-KVCache = tuple[torch.Tensor, torch.Tensor]
+KVCache = tuple[torch.Tensor, torch.Tensor] | StaticKVCache
 
 
 def _append_to_cache(
@@ -18,6 +19,8 @@ def _append_to_cache(
     past_key_value: KVCache | None,
 ) -> KVCache:
     """Append sequence-first cache entries stored as [batch, heads, time, dim]."""
+    if isinstance(past_key_value, StaticKVCache):
+        return past_key_value.append(key, value)
     if past_key_value is None:
         return key, value
     past_key, past_value = past_key_value
@@ -234,7 +237,7 @@ class StandardMultiheadAttention(nn.Module):
         k_new = self.k_proj(key_value).view(batch, source_len, self.num_heads, self.head_dim).transpose(1, 2)
         v_new = self.v_proj(key_value).view(batch, source_len, self.num_heads, self.head_dim).transpose(1, 2)
         k, v = _append_to_cache(k_new, v_new, past_key_value)
-        present_key_value = (k, v)
+        present_key_value = past_key_value if isinstance(past_key_value, StaticKVCache) else (k, v)
 
         out_heads = None
         if not need_weights and attn_mask is None and key_padding_mask is None:
@@ -330,7 +333,7 @@ class ReducedDimMultiheadAttention(nn.Module):
             batch, source_len, self.num_heads, self.value_head_dim
         ).transpose(1, 2)
         k, v = _append_to_cache(k_new, v_new, past_key_value)
-        present_key_value = (k, v)
+        present_key_value = past_key_value if isinstance(past_key_value, StaticKVCache) else (k, v)
 
         out_heads = None
         if not need_weights and attn_mask is None and key_padding_mask is None:
@@ -449,7 +452,7 @@ class CollaborativeAttention(nn.Module):
             .transpose(1, 2)
         )
         k_cached, v = _append_to_cache(k_new, v_new, past_key_value)
-        present_key_value = (k_cached, v)
+        present_key_value = past_key_value if isinstance(past_key_value, StaticKVCache) else (k_cached, v)
 
         q = q_shared[:, None, :, :] * self.mixing_vector[None, :, None, :]
         k = k_cached.expand(-1, self.num_heads, -1, -1)
@@ -528,7 +531,7 @@ class SharedIdentityAttention(nn.Module):
         k_new = self.k_proj(key_value)[:, None, :, :]
         v_new = self.v_proj(key_value)[:, None, :, :]
         k_cached, v_cached = _append_to_cache(k_new, v_new, past_key_value)
-        present_key_value = (k_cached, v_cached)
+        present_key_value = past_key_value if isinstance(past_key_value, StaticKVCache) else (k_cached, v_cached)
         k = k_cached[:, 0]
         v = v_cached[:, 0]
         source_len = k.shape[1]
@@ -606,7 +609,7 @@ class GroupedQueryAttention(nn.Module):
         k_new = self.k_proj(key_value).view(batch, source_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v_new = self.v_proj(key_value).view(batch, source_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         k, v = _append_to_cache(k_new, v_new, past_key_value)
-        present_key_value = (k, v)
+        present_key_value = past_key_value if isinstance(past_key_value, StaticKVCache) else (k, v)
         out_heads = None
         if not need_weights and attn_mask is None and key_padding_mask is None:
             out_heads = _grouped_sdpa_attention(

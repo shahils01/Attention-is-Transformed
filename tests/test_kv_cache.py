@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from lgma.transformer import TinyTransformerLM
+from lgma.kv_cache import StaticKVCache
 
 
 def build_model(attention_type: str, **overrides) -> TinyTransformerLM:
@@ -26,6 +27,7 @@ def build_model(attention_type: str, **overrides) -> TinyTransformerLM:
     ("attention_type", "overrides"),
     [
         ("mha", {}),
+        ("reduced_mha", {}),
         ("collaborative", {}),
         ("shared_identity", {}),
         ("mqa", {}),
@@ -114,3 +116,66 @@ def test_using_cache_does_not_change_state_dict():
     assert before.keys() == after.keys()
     assert all(torch.equal(before[name], after[name]) for name in before)
 
+
+@pytest.mark.parametrize(
+    ("attention_type", "overrides"),
+    [
+        ("mha", {}),
+        ("reduced_mha", {}),
+        ("collaborative", {}),
+        ("shared_identity", {}),
+        ("mqa", {}),
+        ("gqa", {"num_kv_heads": 2}),
+        (
+            "lgma_quad",
+            {"num_base_heads": 2, "value_transform": "lie_quadratic"},
+        ),
+    ],
+)
+def test_static_cache_matches_full_context_without_reallocating(attention_type, overrides):
+    torch.manual_seed(12)
+    model = build_model(attention_type, **overrides)
+    input_ids = torch.randint(0, model.vocab_size, (2, 8))
+    cache = model.allocate_kv_cache(batch_size=2, max_length=8)
+
+    with torch.no_grad():
+        full_logits = model(input_ids)
+        prefix_logits, returned = model(
+            input_ids[:, :3], past_key_values=cache, use_cache=True
+        )
+        assert returned[0] is cache[0]
+        assert torch.allclose(prefix_logits, full_logits[:, :3], atol=2e-5, rtol=2e-5)
+        pointers = [(layer[0].data_ptr(), layer[1].data_ptr()) for layer in cache]
+        allocated = [layer.allocated_bytes for layer in cache]
+
+        for position in range(3, input_ids.shape[1]):
+            step_logits, returned = model(
+                input_ids[:, position : position + 1],
+                past_key_values=cache,
+                use_cache=True,
+            )
+            assert returned[0] is cache[0]
+            assert torch.allclose(
+                step_logits[:, 0], full_logits[:, position], atol=2e-5, rtol=2e-5
+            )
+            assert [layer.length for layer in cache] == [position + 1] * len(cache)
+            assert [(layer[0].data_ptr(), layer[1].data_ptr()) for layer in cache] == pointers
+            assert [layer.allocated_bytes for layer in cache] == allocated
+
+
+def test_static_cache_capacity_and_inference_only():
+    model = build_model("lgma_quad", num_base_heads=2)
+    cache = model.allocate_kv_cache(batch_size=1, max_length=3)
+    with pytest.raises(RuntimeError, match="requires torch.no_grad"):
+        model(torch.tensor([[1]]), past_key_values=cache, use_cache=True)
+    assert all(layer.length == 0 for layer in cache)
+
+    with torch.no_grad():
+        model(torch.tensor([[1, 2, 3]]), past_key_values=cache, use_cache=True)
+        with pytest.raises(ValueError, match="exceeds max_length"):
+            model(torch.tensor([[4]]), past_key_values=cache, use_cache=True)
+        for layer in cache:
+            assert isinstance(layer, StaticKVCache)
+            layer.reset()
+        model(torch.tensor([[5]]), past_key_values=cache, use_cache=True)
+    assert all(layer.length == 1 for layer in cache)

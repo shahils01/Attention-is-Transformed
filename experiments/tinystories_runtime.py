@@ -218,7 +218,10 @@ def generate_text(
             stop_ids = tokenizer.encode(stop_sequence).to(device)
     context = ids[:, -model.context_length :]
     if context.size(1) < model.context_length:
-        logits, past_key_values = model(context, use_cache=True)
+        past_key_values = model.allocate_kv_cache(batch_size=context.size(0))
+        logits, past_key_values = model(
+            context, past_key_values=past_key_values, use_cache=True
+        )
     else:
         logits = model(context)
         past_key_values = None
