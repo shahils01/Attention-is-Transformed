@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import sys
 import time
@@ -29,6 +30,7 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--model_label", default=None)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--precision", choices=["fp32", "bf16", "fp16"], default="bf16")
     parser.add_argument("--batch_size", type=int, default=8)
@@ -57,6 +59,7 @@ def parse_args() -> argparse.Namespace:
         ],
         default="default",
     )
+    parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -70,6 +73,12 @@ def precision_context(device: torch.device, precision: str):
 def synchronize(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize(device)
+
+
+def percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, math.ceil(fraction * len(ordered)) - 1))
+    return ordered[index]
 
 
 def main() -> None:
@@ -159,6 +168,9 @@ def main() -> None:
     median_seconds = statistics.median(durations)
     tokens_per_step = args.batch_size * context_length
     result = {
+        "schema_version": 2,
+        "protocol": "tinystories_matched_single_gpu_training_v1",
+        "model_label": args.model_label,
         "checkpoint": str(args.checkpoint),
         "checkpoint_step": int(checkpoint.get("step", 0)),
         "batch_size": args.batch_size,
@@ -167,7 +179,9 @@ def main() -> None:
         "warmup_steps": args.warmup,
         "measured_steps": args.repeats,
         "median_step_ms": median_seconds * 1000.0,
+        "p95_step_ms": percentile(durations, 0.95) * 1000.0,
         "mean_step_ms": statistics.mean(durations) * 1000.0,
+        "raw_step_seconds": durations,
         "tokens_per_second": tokens_per_step / max(median_seconds, 1e-12),
         "loss": loss,
         "fuse_base_qkv": args.fuse_base_qkv,
@@ -177,8 +191,25 @@ def main() -> None:
         "compile_mode": args.compile_mode if args.compile else None,
     }
     if device.type == "cuda":
-        result["peak_memory_gib"] = torch.cuda.max_memory_allocated(device) / 1024**3
-    print(json.dumps(result, indent=2, sort_keys=True))
+        result["peak_memory_allocated_bytes"] = torch.cuda.max_memory_allocated(device)
+        result["peak_memory_reserved_bytes"] = torch.cuda.max_memory_reserved(device)
+        result["peak_memory_allocated_gib"] = (
+            result["peak_memory_allocated_bytes"] / 1024**3
+        )
+        result["peak_memory_reserved_gib"] = (
+            result["peak_memory_reserved_bytes"] / 1024**3
+        )
+        result["hardware"] = {
+            "torch": torch.__version__,
+            "cuda_runtime": torch.version.cuda,
+            "cudnn": torch.backends.cudnn.version(),
+            "device": torch.cuda.get_device_name(device),
+        }
+    rendered = json.dumps(result, indent=2, sort_keys=True)
+    print(rendered)
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
