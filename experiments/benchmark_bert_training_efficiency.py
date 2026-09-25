@@ -25,6 +25,7 @@ from lgma.bert import bert_parameter_counts, load_bert_masked_lm
 METHODS = {
     "MHA": "mha",
     "GQA": "gqa",
+    "MQA": "mqa",
     "Collaborative MHA": "collaborative",
     "GT-MHA": "gt_mha_residual",
     "GT-MHA (quadratic)": "gt_mha_quadratic",
