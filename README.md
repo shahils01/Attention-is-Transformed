@@ -14,6 +14,8 @@ score_ij^h = q_i^T M_h k_j
 
 ## Fixed-base LU attention
 
+For the primary TinyStories LU versus GQA4 comparison, use the [frozen training and evaluation protocol](docs/tinystories_lu_gqa4_v1.md). The standalone example below is for development.
+
 Select `gt_mha_lu` to give each contiguous group of query heads a shared Q/K/V base. The first head in each group uses the identity. Every other head learns a packed unit lower triangle, a log diagonal, and a unit upper triangle. The query is multiplied on the right by `L @ diag(exp(s)) @ U`. Positive pivots give positive determinant in exact arithmetic. The freely learned output projection acts on the head outputs directly.
 
 The TinyStories example uses 16 heads, four bases, and head width 64. Heads 0, 4, 8, and 12 are identity heads. The other 12 have 49,152 trainable score parameters in total per layer. The layer has 1,884,160 attention weights with the example settings. Its BF16 KV cache uses 1,024 bytes per token per layer, equal to GQA with four KV heads. `lu_init_scale` sets a near-identity initialization, with standard deviation `lu_init_scale / sqrt(d)` for the strict triangles and `lu_init_scale` for the log diagonal.

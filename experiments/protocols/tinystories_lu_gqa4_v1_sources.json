@@ -1,0 +1,21 @@
+{
+  "experiments/evaluate_lu_protocol.py": "19b608e309e7f5e28106f2cc3256fc5b0312ad09cf25099a156d20ff8954023d",
+  "experiments/protocols/tinystories_lu_gqa4_v1.json": "543154cf73832ca6bd223052889de0a5a6b9d7dfef467a7f97aa651670b2d78b",
+  "experiments/tinystories_lu_protocol.py": "8715a0e0feb947416e0b70bfba21416608f7a9d9ac1c2f86c3680515744c66ef",
+  "experiments/tinystories_protocol_training.py": "cf41798a9ce20d67bfcec65519b28f670ba82bfa6c698c8614eaeaf8869b64b8",
+  "experiments/tinystories_runtime.py": "253ac348b9187511652a0aa33066ea537b81e946465afefa63e726945fca05ba",
+  "experiments/train_tinystories.py": "34c2aff7de00aac793f4e8cfb5934267e9fc6e90101313568a41ae20d37e9f11",
+  "src/lgma/__init__.py": "188841fece555794477c93a986d7a9e0131cc97f9fcfba83e6b5f813b45c4bc6",
+  "src/lgma/accounting.py": "7cc728b353e2c2a04f281f7432d2cb8cf5b65b6ea49ed79b45113ac95413c9e2",
+  "src/lgma/attention.py": "bb9acc9ad6d541137bac1d77f4730f3dc10da7fade9c658166639d254941428e",
+  "src/lgma/baselines.py": "8e35e0c2d2bd20af85a773178a2423e831c09128d2a608f83c0472ea19374ff4",
+  "src/lgma/checkpointing.py": "d1fa41e7bf5a5e11d112b805b6ac6e44e67c0c916dda7ce183ac68397bc58a3e",
+  "src/lgma/diagnostics.py": "c24da0f08eca67dd0843fbc7c6721bd89ae2a6a785da0a75f742a01272f7afe0",
+  "src/lgma/kv_cache.py": "aa74edf3f6b7cc16dc7c9197d8c0168cf6448b67e30ebbba2b17c672baf53b29",
+  "src/lgma/lu_kernel.py": "d72c29a2051e39f74ae70ce974702e801e834dcd4093fddbd2205d7737a82aae",
+  "src/lgma/packed_data.py": "2cde3eae71342225662e8ce18dc0c26ea73ff749883ba4ae734507989d53bf79",
+  "src/lgma/synthetic.py": "fb2ea4254c11ac9a2c630f60d960bd9c94ed1f704f091366b6c76aec549912e4",
+  "src/lgma/tracking.py": "852cd33027375d3d46b41407c6515adf6d94d4a42fcc2975d45a41b966645610",
+  "src/lgma/transformer.py": "7d279983c379529b54fb05f59178fbe88ab60ae598445ed421a3e3cca751b494",
+  "src/lgma/vision.py": "8925475d7b1f80bdcad5d7ad61e30533d8df597dd29ad3cbebf0dd49d3ffdb4b"
+}

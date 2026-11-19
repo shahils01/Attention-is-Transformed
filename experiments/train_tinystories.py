@@ -51,6 +51,11 @@ from lgma.transformer import (
     validate_paper_gt_mha_module,
 )
 
+if __package__:
+    from . import tinystories_protocol_training as protocol_training
+else:
+    import tinystories_protocol_training as protocol_training
+
 
 ATTENTION_TYPES = [
     "mha",
@@ -95,6 +100,10 @@ def parse_args() -> argparse.Namespace:
     )
     data_group = parser.add_mutually_exclusive_group(required=True)
     data_group.add_argument("--data_path")
+    parser.add_argument(
+        "--locked_protocol", action="store_true",
+        help="Enforce the frozen TinyStories LU versus GQA4 comparison and its checkpoint lineage.",
+    )
     data_group.add_argument(
         "--packed_data_dir",
         type=Path,
@@ -826,13 +835,25 @@ def make_data_batch(
             device=device,
             generator=generator,
         )
-    return make_lm_batch(
+    compact = data.dtype == torch.uint8
+    batch = make_lm_batch(
         data,
         batch_size,
         seq_len,
-        device=device,
+        device="cpu" if compact else device,
         generator=generator,
     )
+    if not compact:
+        return batch
+    return SyntheticBatch(
+        input_ids=batch.input_ids.to(device=device, dtype=torch.long),
+        targets=batch.targets.to(device=device, dtype=torch.long),
+    )
+
+
+def sampled_rng_context(device: torch.device, locked_protocol: bool):
+    devices = [device] if device.type == "cuda" else []
+    return torch.random.fork_rng(devices=devices) if locked_protocol else nullcontext()
 
 
 @torch.no_grad()
@@ -843,23 +864,26 @@ def evaluate_text_loss(
     seq_len: int,
     device: torch.device,
     eval_batches: int,
+    *,
+    locked_protocol: bool = False,
 ) -> float:
     model.eval()
     losses = []
     generator = None
     is_lu = getattr(model.first_attention, "metric_mode", None) == "lu"
-    if isinstance(encoded, PackedTokenSplit) or is_lu:
+    if locked_protocol or isinstance(encoded, PackedTokenSplit) or is_lu:
         generator = torch.Generator().manual_seed(EVAL_SEED)
-    for _ in range(eval_batches):
-        batch = make_data_batch(
-            encoded,
-            batch_size,
-            seq_len,
-            device,
-            generator=generator,
-        )
-        _, loss = model(batch.input_ids, batch.targets)
-        losses.append(loss.detach())
+    with sampled_rng_context(device, locked_protocol):
+        for _ in range(eval_batches):
+            batch = make_data_batch(
+                encoded,
+                batch_size,
+                seq_len,
+                device,
+                generator=generator,
+            )
+            _, loss = model(batch.input_ids, batch.targets)
+            losses.append(loss.detach())
     model.train()
     return float(torch.stack(losses).mean().cpu())
 
@@ -983,14 +1007,17 @@ def add_attention_diagnostics(
     seq_len: int,
     device: torch.device,
     diagnostic_batches: int,
+    *,
+    locked_protocol: bool = False,
 ) -> None:
     model = unwrap_model(model)
     first_attn = model.first_attention
     is_lu = getattr(first_attn, "metric_mode", None) == "lu"
     report["attention_diagnostics_layer"] = 0
-    with torch.no_grad(), (evaluation_mode(first_attn) if is_lu else nullcontext()):
+    mode = evaluation_mode(first_attn) if locked_protocol or is_lu else nullcontext()
+    with torch.no_grad(), mode, sampled_rng_context(device, locked_protocol):
         generator = None
-        if isinstance(encoded, PackedTokenSplit) or is_lu:
+        if locked_protocol or isinstance(encoded, PackedTokenSplit) or is_lu:
             generator = torch.Generator().manual_seed(DIAGNOSTIC_SEED)
         attention_sims = []
         centered_sims = []
@@ -1171,6 +1198,7 @@ def save_checkpoint(
     args: argparse.Namespace,
     data_generator_states: list[torch.Tensor] | None = None,
     run_manifest: dict[str, object] | None = None,
+    protocol_rng_states: list[dict] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     base_model = unwrap_model(model)
@@ -1185,6 +1213,12 @@ def save_checkpoint(
     }
     if run_manifest is not None:
         payload["run_manifest"] = run_manifest
+    if getattr(args, "locked_protocol", False):
+        if protocol_rng_states is None or run_manifest is None:
+            raise RuntimeError("locked checkpoint requires the immutable manifest and all rank RNG states")
+        payload["protocol_resume"] = protocol_training.checkpoint_binding(
+            step, run_manifest, protocol_rng_states,
+        )
     temporary_path = path.with_name(f".{path.name}.tmp")
     torch.save(payload, temporary_path)
     os.replace(temporary_path, path)
@@ -1249,10 +1283,9 @@ def load_checkpoint(
     # PyTorch 2.6+ defaults torch.load to weights_only=True, so explicitly opt in
     # to loading the full payload created by save_checkpoint above.
     checkpoint = load_full_checkpoint(path, map_location=device)
-    unwrap_model(model).load_state_dict(checkpoint["model_state"])
-    optimizer.load_state_dict(checkpoint["optimizer_state"])
-    if scaler is not None and checkpoint.get("scaler_state") is not None:
-        scaler.load_state_dict(checkpoint["scaler_state"])
+    if protocol_training.is_locked_checkpoint(checkpoint):
+        raise ValueError("use --locked_protocol to resume a locked comparison checkpoint")
+    apply_training_checkpoint(checkpoint, model, optimizer, scaler)
     data_generator_states = checkpoint.get("data_generator_states")
     if data_generator is not None and data_generator_states is not None:
         # Checkpoints are loaded with ``map_location=device`` so that model and
@@ -1291,6 +1324,13 @@ def load_checkpoint(
     return step, checkpoint.get("run_manifest")
 
 
+def apply_training_checkpoint(checkpoint, model, optimizer, scaler) -> None:
+    unwrap_model(model).load_state_dict(checkpoint["model_state"])
+    optimizer.load_state_dict(checkpoint["optimizer_state"])
+    if scaler is not None and checkpoint.get("scaler_state") is not None:
+        scaler.load_state_dict(checkpoint["scaler_state"])
+
+
 def gather_data_generator_states(
     data_generator: torch.Generator,
     ddp_enabled: bool,
@@ -1310,6 +1350,16 @@ def gather_data_generator_states(
     if any(state is None for state in gathered):
         raise RuntimeError("failed to gather every DDP data sampler state")
     return [state for state in gathered if state is not None]
+
+
+def gather_checkpoint_rng(
+    data_generator: torch.Generator, device: torch.device, ddp_enabled: bool,
+    rank: int, world_size: int, locked_protocol: bool,
+) -> tuple[list[torch.Tensor] | None, list[dict] | None]:
+    if locked_protocol:
+        states = protocol_training.gather_training_rng(data_generator, device, rank, world_size)
+        return ([state["sampler"] for state in states] if states is not None else None), states
+    return gather_data_generator_states(data_generator, ddp_enabled, rank, world_size), None
 
 
 def build_report(
@@ -1336,6 +1386,7 @@ def build_report(
         seq_len,
         device,
         args.eval_batches,
+        locked_protocol=getattr(args, "locked_protocol", False),
     )
     report: dict[str, object] = {
         "data_path": args.data_path,
@@ -1381,12 +1432,23 @@ def build_report(
         seq_len,
         device,
         args.diagnostic_batches,
+        locked_protocol=getattr(args, "locked_protocol", False),
     )
     return report
 
 
 def main() -> None:
     args = parse_args()
+    protocol = None
+    if args.locked_protocol:
+        if __package__:
+            from . import tinystories_lu_protocol as lu_protocol
+        else:
+            import tinystories_lu_protocol as lu_protocol
+
+        protocol = lu_protocol.load_protocol()
+        source = lu_protocol.source_fingerprints()
+        lu_protocol.validate_source_fingerprints(source)
     if args.packed_data_dir is not None and args.val_data_path is not None:
         raise SystemExit("--val_data_path cannot be used with --packed_data_dir")
     if args.grad_accum_steps <= 0:
@@ -1444,8 +1506,40 @@ def main() -> None:
             if device.index is None:
                 device = torch.device("cuda", torch.cuda.current_device())
             torch.cuda.set_device(device)
-            torch.backends.cuda.matmul.allow_tf32 = True
-        if args.packed_data_dir is not None:
+            if protocol is None:
+                torch.backends.cuda.matmul.allow_tf32 = True
+        config = model_config_from_args(args)
+        if protocol is not None:
+            lu_protocol.validate_training_args(protocol, args, config)
+            torch.set_float32_matmul_precision("highest")
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            runtime = lu_protocol.validate_training_runtime(
+                protocol, device, rank=rank, local_rank=local_rank, world_size=world_size,
+            )
+            rank_runtimes = [None] * world_size
+            dist.all_gather_object(rank_runtimes, runtime)
+            tokenizer = protocol_training.build_locked_character_tokenizer(
+                protocol["data"]["tokenizer"]["vocabulary"],
+            )
+            validated_data = [None]
+            if main_process:
+                validated_data[0] = lu_protocol.validate_training_data(
+                    protocol, args.data_path, args.val_data_path, tokenizer,
+                )
+            dist.broadcast_object_list(validated_data, src=0)
+            train_encoded = protocol_training.encode_locked_character_text(
+                Path(args.data_path), tokenizer, expected_sha256=protocol["data"]["train"]["sha256"],
+            )
+            val_encoded = protocol_training.encode_locked_character_text(
+                Path(args.val_data_path), tokenizer, expected_sha256=protocol["data"]["validation"]["sha256"],
+            )
+            decoded_counts = {"train": train_encoded.numel(), "validation": val_encoded.numel()}
+            for split, count in decoded_counts.items():
+                if count != protocol["data"][split]["decoded_characters"]:
+                    raise ValueError(f"locked TinyStories {split} decoded length differs from the protocol")
+            data_backend = "character_text"
+        elif args.packed_data_dir is not None:
             corpus = load_packed_token_corpus(args.packed_data_dir)
             tokenizer = corpus.tokenizer
             train_encoded = corpus.train
@@ -1463,20 +1557,39 @@ def main() -> None:
             val_encoded = tokenizer.encode(val_text) if val_text is not None else train_encoded
             data_backend = "character_text"
 
-        config = model_config_from_args(args)
         is_lu = config["attention_type"] == "gt_mha_lu"
         if is_lu and args.ah_norm_weight != 0.0:
             raise SystemExit("--ah_norm_weight applies to generator-backed attention")
         seq_len = int(config["context_length"])
-        base_model = TinyTransformerLM(vocab_size=tokenizer.vocab_size, **config).to(device)
+        if protocol is not None:
+            base_model = protocol_training.initialize_locked_model(
+                TinyTransformerLM, tokenizer.vocab_size, config, args.seed,
+            ).to(device)
+        else:
+            base_model = TinyTransformerLM(vocab_size=tokenizer.vocab_size, **config).to(device)
         if args.enforce_paper_gt_mha:
             validate_paper_gt_mha_module(base_model.first_attention)
         optimizer = torch.optim.AdamW(
             base_model.parameters(),
             lr=args.lr,
             weight_decay=args.weight_decay,
+            **(protocol_training.ADAMW_OPTIONS if protocol is not None else {}),
         )
         scaler = make_grad_scaler(device, args.precision)
+
+        effective_global_batch = args.batch_size * args.grad_accum_steps * world_size
+        tokens_per_step = effective_global_batch * seq_len
+
+        def step_learning_rate(step: int) -> float:
+            return learning_rate_for_step(
+                step,
+                base_lr=args.lr,
+                min_lr=args.min_lr,
+                total_steps=args.lr_schedule_steps or args.steps,
+                warmup_steps=args.warmup_steps,
+                hold_steps=args.lr_hold_steps,
+                schedule=args.lr_schedule,
+            )
 
         last_loss = None
         last_diversity_loss = 0.0
@@ -1490,6 +1603,72 @@ def main() -> None:
         if output_dir is not None and main_process:
             output_dir.mkdir(parents=True, exist_ok=True)
         wandb_run = None
+
+        start_step = 0
+        run_manifest = None
+        resume_rng_states = None
+        if protocol is not None:
+            effective_model = lu_protocol.validate_training_model(
+                protocol, config["attention_type"], base_model, optimizer,
+            )
+            identity = {
+                "protocol_id": protocol["protocol_id"],
+                "protocol_sha256": protocol["protocol_sha256"],
+                "arm": config["attention_type"],
+                "seed": args.seed,
+                "lock": {
+                    "model_config": config,
+                    "effective_model": effective_model,
+                    "source": source,
+                    "data": {
+                        **validated_data[0],
+                        "train_tokens": decoded_counts["train"],
+                        "validation_tokens": decoded_counts["validation"],
+                    },
+                    "runtime": {
+                        "ranks": rank_runtimes,
+                        "world_size": world_size,
+                        "effective_global_batch": effective_global_batch,
+                        "tokens_per_step": tokens_per_step,
+                        "target_sampled_tokens": args.steps * tokens_per_step,
+                        "effective_precision": args.precision,
+                        "parameter_dtype": str(next(base_model.parameters()).dtype),
+                        "rank_data_seeds": [args.seed + i for i in range(world_size)],
+                    },
+                    "training": protocol["training"],
+                    "official_evaluation": protocol["official_evaluation"],
+                    "sampled_evaluation": protocol["training"]["sampled_evaluation"],
+                },
+            }
+            assert output_dir is not None
+            if args.resume_checkpoint is None:
+                if main_process:
+                    run_manifest = protocol_training.write_initialization(
+                        output_dir, identity, base_model, vars(args),
+                    )
+                    write_lu_run_manifest(output_dir / LU_MANIFEST_NAME, run_manifest, inherited=False)
+            else:
+                checkpoint = load_full_checkpoint(args.resume_checkpoint, map_location="cpu")
+                start_step, run_manifest, resume_rng_states = protocol_training.validate_resume_checkpoint(
+                    checkpoint, identity, optimizer, data_generator, device, step_learning_rate,
+                )
+                if main_process:
+                    initialization_artifact = protocol_training.verify_initialization(
+                        args.resume_checkpoint.parent, run_manifest,
+                    )
+                    protocol_training.inherit_initialization(
+                        initialization_artifact, output_dir, run_manifest, start_step,
+                    )
+                    write_lu_run_manifest(output_dir / LU_MANIFEST_NAME, run_manifest, inherited=True)
+                dist.barrier()
+                apply_training_checkpoint(checkpoint, base_model, optimizer, scaler)
+                del checkpoint
+                if main_process:
+                    print(json.dumps({
+                        "event": "checkpoint_loaded", "step": start_step,
+                        "path": str(args.resume_checkpoint), "protocol": protocol["protocol_id"],
+                    }))
+
         if main_process:
             first_attn = base_model.first_attention
             wandb_run = init_wandb_run(
@@ -1521,9 +1700,7 @@ def main() -> None:
                 },
             )
 
-        start_step = 0
-        run_manifest = None
-        if args.resume_checkpoint is not None:
+        if protocol is None and args.resume_checkpoint is not None:
             start_step, run_manifest = load_checkpoint(
                 args.resume_checkpoint,
                 base_model,
@@ -1533,7 +1710,7 @@ def main() -> None:
                 data_generator,
                 rank,
             )
-        if is_lu and main_process:
+        if protocol is None and is_lu and main_process:
             if args.resume_checkpoint is None:
                 run_manifest = build_lu_run_manifest(
                     args, config, base_model, optimizer, device, world_size,
@@ -1581,11 +1758,15 @@ def main() -> None:
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
 
+        if protocol is not None:
+            if resume_rng_states is None:
+                protocol_training.seed_training_rng(args.seed, rank, device)
+            else:
+                protocol_training.restore_training_rng(resume_rng_states[rank], data_generator, device)
+
         training_start_time = time.perf_counter()
         last_log_time = training_start_time
         last_log_step = start_step
-        tokens_per_step = args.batch_size * seq_len * args.grad_accum_steps * world_size
-        effective_global_batch = args.batch_size * args.grad_accum_steps * world_size
 
         for step_idx in range(start_step, args.steps):
             step = step_idx + 1
@@ -1594,15 +1775,7 @@ def main() -> None:
             should_diagnose = args.diagnostic_every > 0 and step % args.diagnostic_every == 0
             is_final = step == args.steps
             should_report = should_log or should_eval or should_diagnose or is_final
-            current_lr = learning_rate_for_step(
-                step,
-                base_lr=args.lr,
-                min_lr=args.min_lr,
-                total_steps=args.lr_schedule_steps or args.steps,
-                warmup_steps=args.warmup_steps,
-                hold_steps=args.lr_hold_steps,
-                schedule=args.lr_schedule,
-            )
+            current_lr = step_learning_rate(step)
             set_optimizer_lr(optimizer, current_lr)
             optimizer.zero_grad(set_to_none=True)
 
@@ -1728,6 +1901,7 @@ def main() -> None:
                         seq_len,
                         device,
                         args.eval_batches,
+                        locked_protocol=args.locked_protocol,
                     )
                     payload["validation_loss"] = validation_loss
                     payload["validation_perplexity"] = math.exp(min(validation_loss, 20.0))
@@ -1740,6 +1914,7 @@ def main() -> None:
                         seq_len,
                         device,
                         args.diagnostic_batches,
+                        locked_protocol=args.locked_protocol,
                     )
                 print(json.dumps(payload))
                 write_jsonl(metrics_path, payload)
@@ -1751,12 +1926,10 @@ def main() -> None:
                 args.save_every > 0
                 and output_dir is not None
                 and step % args.save_every == 0
+                and (protocol is None or not is_final)
             ):
-                data_generator_states = gather_data_generator_states(
-                    data_generator,
-                    ddp_enabled,
-                    rank,
-                    world_size,
+                data_generator_states, protocol_rng_states = gather_checkpoint_rng(
+                    data_generator, device, ddp_enabled, rank, world_size, args.locked_protocol,
                 )
                 if main_process:
                     save_checkpoint(
@@ -1769,6 +1942,7 @@ def main() -> None:
                         args,
                         data_generator_states,
                         run_manifest,
+                        protocol_rng_states,
                     )
                     prune_old_checkpoints(
                         output_dir,
@@ -1779,11 +1953,8 @@ def main() -> None:
         if last_loss is None:
             raise SystemExit("--steps must be greater than resume checkpoint step")
 
-        final_data_generator_states = gather_data_generator_states(
-            data_generator,
-            ddp_enabled,
-            rank,
-            world_size,
+        final_data_generator_states, final_protocol_rng_states = gather_checkpoint_rng(
+            data_generator, device, ddp_enabled, rank, world_size, args.locked_protocol,
         )
         if main_process:
             report = build_report(
@@ -1807,7 +1978,7 @@ def main() -> None:
             report["effective_global_batch"] = effective_global_batch
             report["data_sampling"] = "uniform_random_with_replacement"
             report["data_seed"] = args.seed
-            if is_lu:
+            if is_lu or protocol is not None:
                 report["initialization_provenance"] = (
                     "recorded_at_step_zero" if args.resume_checkpoint is None
                     else "inherited_from_checkpoint" if run_manifest is not None
@@ -1839,6 +2010,7 @@ def main() -> None:
                     args,
                     final_data_generator_states,
                     run_manifest,
+                    final_protocol_rng_states,
                 )
             log_wandb(wandb_run, {"final": report}, step=args.steps)
             print(json.dumps(report, indent=2))
