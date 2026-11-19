@@ -12,6 +12,28 @@ M_h = exp(sum_r theta[h, r] A_r)
 score_ij^h = q_i^T M_h k_j
 ```
 
+## Fixed-base LU attention
+
+Select `gt_mha_lu` to give each contiguous group of query heads a shared Q/K/V base. The first head in each group uses the identity. Every other head learns a packed unit lower triangle, a log diagonal, and a unit upper triangle. The query is multiplied on the right by `L @ diag(exp(s)) @ U`. Positive pivots give positive determinant in exact arithmetic. The freely learned output projection acts on the head outputs directly.
+
+The TinyStories example uses 16 heads, four bases, and head width 64. Heads 0, 4, 8, and 12 are identity heads. The other 12 have 49,152 trainable score parameters in total per layer. The layer has 1,884,160 attention weights with the example settings. Its BF16 KV cache uses 1,024 bytes per token per layer, equal to GQA with four KV heads. `lu_init_scale` sets a near-identity initialization, with standard deviation `lu_init_scale / sqrt(d)` for the strict triangles and `lu_init_scale` for the log diagonal.
+
+```bash
+python experiments/train_tinystories.py \
+  --config experiments/configs/tinystories_gt_mha_lu_c4_h16.json \
+  --data_path train.txt --val_data_path valid.txt --output_dir runs/lu-example \
+  --device cuda --precision bf16
+```
+
+The CUDA training path uses Triton to expand the shared queries and apply the head matrices in one kernel. Custom backward kernels compute gradients for both the base queries and the LU-derived matrices. Eligible inputs are BF16 or FP16 on NVIDIA compute capability 8.0 or higher with head width at most 128. The PyTorch reference also supports CPU, evaluation, and other precisions. Set `fuse_lu_queries` to `false` to select the reference explicitly. The benchmark checks fused dispatch and compares outputs and gradients before timing.
+
+```bash
+python -m pytest -q tests/test_fixed_base_lu.py tests/test_lu_kernel.py
+python experiments/benchmark_fixed_base_lu.py --batch-size 4 --sequence-length 512
+python experiments/benchmark_fixed_base_lu.py --scope model --layers 12 \
+  --vocab-size 230 --batch-size 4 --sequence-length 512
+```
+
 ## Layout
 
 ```text

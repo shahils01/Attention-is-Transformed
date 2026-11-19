@@ -21,6 +21,7 @@ class AttentionAccounting:
     attention_maps: int
     base_heads: int
     generated_heads_per_base: int
+    lu_metric_parameters: int = 0
 
 
 def count_parameters(module: nn.Module, trainable_only: bool = True) -> int:
@@ -94,7 +95,8 @@ def kv_cache_bytes_per_token_per_layer(
         base_dim = getattr(attention_module, "base_dim", attention_module.head_dim)
         value_dim = getattr(attention_module, "value_dim", attention_module.head_dim)
         num_base_heads = getattr(attention_module, "num_base_heads", 1)
-        return num_base_heads * (base_dim + value_dim) * size
+        num_value_base_heads = getattr(attention_module, "num_value_base_heads", num_base_heads)
+        return (num_base_heads * base_dim + num_value_base_heads * value_dim) * size
     if attention_module.__class__.__name__ == "SharedIdentityAttention":
         return 2 * attention_module.head_dim * size
     if hasattr(attention_module, "num_heads") and hasattr(attention_module, "head_dim"):
@@ -143,6 +145,9 @@ def attention_accounting(
         attention_maps=attention_module.num_heads,
         base_heads=getattr(attention_module, "num_base_heads", attention_module.num_heads),
         generated_heads_per_base=getattr(attention_module, "generated_heads_per_base", 1),
+        lu_metric_parameters=count_named_parameters(
+            attention_module, ("lu_lower", "lu_upper", "lu_log_diag")
+        ),
     )
 
 

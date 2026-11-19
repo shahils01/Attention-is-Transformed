@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import torch
@@ -65,9 +69,24 @@ ATTENTION_TYPES = [
     "gt_mha_exact",
     "gt_mha_residual",
     "gt_mha_quadratic",
+    "gt_mha_lu",
 ]
 GENERATOR_TYPES = ["full", "diagonal", "symmetric"]
 GENERATOR_MIXING_MODES = ["softmax", "none"]
+EVAL_SEED = 17_029
+DIAGNOSTIC_SEED = 91_337
+LU_MANIFEST_NAME = "run_manifest.json"
+LU_UNUSED_MODEL_FIELDS = {
+    "generator_type",
+    "generator_mixing",
+    "theta_init",
+    "theta_init_scale",
+    "generator_init_scale",
+    "stabilize_generators",
+    "normalize_generators",
+    "value_beta",
+    "fold_value_transform_into_output",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -207,6 +226,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--value_dim", type=int, default=None)
     parser.add_argument("--num_base_heads", type=int, default=None)
     parser.add_argument(
+        "--lu_init_scale",
+        type=float,
+        default=None,
+        help="Near-identity LU factor initialization scale for gt_mha_lu (default: 0.02).",
+    )
+    parser.add_argument(
+        "--fuse_lu_queries",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use the fused CUDA training kernel for LU query transforms (default: enabled).",
+    )
+    parser.add_argument(
         "--fuse_base_qkv",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -262,7 +293,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--metric_mode",
-        choices=["exp", "residual", "quadratic", "unconstrained"],
+        choices=["exp", "residual", "quadratic", "unconstrained", "lu"],
         default=None,
     )
     parser.add_argument("--metric_beta", type=float, default=None)
@@ -484,6 +515,7 @@ def effective_attention_config(module) -> dict[str, object]:
         "value_dim",
         "num_heads",
         "num_base_heads",
+        "num_value_base_heads",
         "generated_heads_per_base",
         "num_generators",
         "generator_type",
@@ -502,10 +534,14 @@ def effective_attention_config(module) -> dict[str, object]:
         "logit_scale_mode",
         "learn_head_temperature",
         "value_transform",
+        "value_transform_mode",
         "fuse_base_qkv",
         "fold_value_transform_into_output",
         "sdpa_gqa_mode",
     ]
+    if getattr(module, "metric_mode", None) == "lu":
+        keys = [key for key in keys if key not in LU_UNUSED_MODEL_FIELDS]
+        keys.extend(("lu_init_scale", "fuse_lu_queries"))
     return {key: getattr(module, key) for key in keys if hasattr(module, key)}
 
 
@@ -589,8 +625,31 @@ def model_config_from_args(args: argparse.Namespace) -> dict[str, object]:
             merged[key] = value
 
     merged["causal"] = not args.non_causal
-    if merged["attention_type"] not in LGMA_ATTENTION_TYPES:
-        merged["num_generators"] = 0
+    if merged["attention_type"] == "gt_mha_lu":
+        generators = args.num_generators
+        if generators is None:
+            generators = config.get("num_generators", 0)
+        if generators != 0:
+            raise SystemExit("gt_mha_lu requires --num_generators 0")
+        requested_mode = args.metric_mode or config.get("metric_mode")
+        if requested_mode not in (None, "lu"):
+            raise SystemExit("gt_mha_lu requires --metric_mode lu")
+        for key in LU_UNUSED_MODEL_FIELDS:
+            merged.pop(key, None)
+        merged.update(num_generators=0, metric_mode="lu")
+        for key, default, override in (
+            ("lu_init_scale", 0.02, args.lu_init_scale),
+            ("fuse_lu_queries", True, args.fuse_lu_queries),
+        ):
+            if override is not None:
+                merged[key] = override
+            else:
+                merged.setdefault(key, default)
+    else:
+        if merged["metric_mode"] == "lu":
+            raise SystemExit("--metric_mode lu requires --attention gt_mha_lu")
+        if merged["attention_type"] not in LGMA_ATTENTION_TYPES:
+            merged["num_generators"] = 0
     return merged
 
 
@@ -598,6 +657,158 @@ def build_tokenizer(train_text: str, val_text: str | None) -> CharTokenizer:
     if val_text is None:
         return CharTokenizer(train_text)
     return CharTokenizer(train_text + val_text)
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def lu_data_provenance(
+    args: argparse.Namespace,
+    tokenizer,
+    train_encoded: torch.Tensor | PackedTokenSplit,
+    val_encoded: torch.Tensor | PackedTokenSplit,
+) -> dict[str, object]:
+    if isinstance(train_encoded, PackedTokenSplit):
+        root = train_encoded.root
+        metadata_path = root / "dataset_metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        tokenizer_path = root / metadata.get("tokenizer", "tokenizer.json")
+        runtime_tokenizer = json.dumps(vars(tokenizer), sort_keys=True).encode("utf-8")
+        return {
+            "backend": "packed_uint16",
+            "root": str(root),
+            "metadata_sha256": file_sha256(metadata_path),
+            "tokenizer_file_sha256": (
+                file_sha256(tokenizer_path) if tokenizer_path.is_file() else None
+            ),
+            "runtime_tokenizer_sha256": hashlib.sha256(runtime_tokenizer).hexdigest(),
+            "splits": {
+                split.split: {
+                    "tokens": split.numel(),
+                    "files_sha256": {
+                        str(path.relative_to(root)): file_sha256(path) for path in split.paths
+                    },
+                }
+                for split in (train_encoded, val_encoded)
+            },
+        }
+
+    def text_split(path: str, encoded: torch.Tensor) -> dict[str, object]:
+        return {"path": path, "file_sha256": file_sha256(Path(path)), "tokens": encoded.numel()}
+
+    vocab = json.dumps(tokenizer.itos, ensure_ascii=False).encode("utf-8")
+    return {
+        "backend": "character_text",
+        "runtime_tokenizer_sha256": hashlib.sha256(vocab).hexdigest(),
+        "train": text_split(args.data_path, train_encoded),
+        "validation": text_split(args.val_data_path, val_encoded)
+        if args.val_data_path is not None
+        else {"uses_train_split": True, "tokens": val_encoded.numel()},
+    }
+
+
+@torch.no_grad()
+def build_lu_run_manifest(
+    args: argparse.Namespace,
+    config: dict[str, object],
+    model: TinyTransformerLM,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    world_size: int,
+    tokenizer,
+    train_encoded: torch.Tensor | PackedTokenSplit,
+    val_encoded: torch.Tensor | PackedTokenSplit,
+) -> dict[str, object]:
+    git = shutil.which("git")
+    revision = None
+    if git is not None:
+        result = subprocess.run(
+            [git, "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0:
+            revision = result.stdout.strip()
+    source_paths = [
+        Path(__file__).resolve(), ROOT / "pyproject.toml", *sorted((SRC / "lgma").rglob("*.py"))
+    ]
+
+    first_attn = model.first_attention
+    attention_config = effective_attention_config(first_attn)
+    initialization_layers = []
+    for index, block in enumerate(model.blocks):
+        attn = block.attn
+        if effective_attention_config(attn) != attention_config:
+            raise RuntimeError(f"attention configuration differs at layer {index}")
+        metrics = attn.compute_metrics()[::attn.generated_heads_per_base]
+        identity = torch.eye(attn.base_dim, dtype=metrics.dtype, device=metrics.device)
+        if not torch.equal(metrics, identity.expand_as(metrics)):
+            raise RuntimeError(f"fixed LU score metrics are not identity at layer {index}")
+        factors = {}
+        for name in ("lu_lower", "lu_upper", "lu_log_diag"):
+            parameter = getattr(attn, name, None)
+            if parameter is not None:
+                values = parameter.detach().cpu().contiguous()
+                factors[name] = {
+                    "shape": list(values.shape),
+                    "dtype": str(values.dtype),
+                    "sha256": hashlib.sha256(values.numpy().tobytes()).hexdigest(),
+                    "max_abs": float(values.abs().max()) if values.numel() else None,
+                }
+        initialization_layers.append(
+            {"layer": index, "fixed_identity_heads": len(metrics), "factors": factors}
+        )
+
+    global_batch = args.batch_size * args.grad_accum_steps * world_size
+    tokens_per_step = global_batch * int(config["context_length"])
+    return {
+        "schema_version": 1,
+        "initialization": {
+            "step": 0,
+            "recipe": "fixed_base_identity_near_identity_lu",
+            "layers": initialization_layers,
+        },
+        "seed": args.seed,
+        "source_revision": revision,
+        "source_sha256": {str(path.relative_to(ROOT)): file_sha256(path) for path in source_paths},
+        "model_config": {"vocab_size": model.vocab_size, **config},
+        "effective_attention_config": attention_config,
+        "data": lu_data_provenance(args, tokenizer, train_encoded, val_encoded),
+        "optimizer": {"name": type(optimizer).__name__, "defaults": optimizer.defaults},
+        "launch_args": vars(args),
+        "runtime": {
+            "device": str(device),
+            "torch": torch.__version__,
+            "effective_precision": args.precision if device.type == "cuda" else "fp32",
+            "parameter_dtype": str(next(model.parameters()).dtype),
+            "cuda_matmul_allow_tf32": (
+                torch.backends.cuda.matmul.allow_tf32 if device.type == "cuda" else None
+            ),
+            "world_size": world_size,
+            "rank_data_seeds": [args.seed + rank for rank in range(world_size)],
+            "effective_global_batch": global_batch,
+            "tokens_per_step": tokens_per_step,
+            "target_sampled_tokens": args.steps * tokens_per_step,
+            "lr_schedule_steps": args.lr_schedule_steps or args.steps,
+        },
+        "evaluation": {"seed": EVAL_SEED, "calibration_seed": DIAGNOSTIC_SEED},
+    }
+
+
+def write_lu_run_manifest(path: Path, manifest: dict[str, object], *, inherited: bool) -> None:
+    contents = json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n"
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent) as source:
+        source.write(contents)
+        source.flush()
+        os.fsync(source.fileno())
+        try:
+            os.link(source.name, path)
+        except FileExistsError:
+            if not inherited or path.read_text(encoding="utf-8") != contents:
+                raise SystemExit(f"{path} already records another run. Use a new --output_dir.") from None
 
 
 def make_data_batch(
@@ -636,8 +847,9 @@ def evaluate_text_loss(
     model.eval()
     losses = []
     generator = None
-    if isinstance(encoded, PackedTokenSplit):
-        generator = torch.Generator().manual_seed(17_029)
+    is_lu = getattr(model.first_attention, "metric_mode", None) == "lu"
+    if isinstance(encoded, PackedTokenSplit) or is_lu:
+        generator = torch.Generator().manual_seed(EVAL_SEED)
     for _ in range(eval_batches):
         batch = make_data_batch(
             encoded,
@@ -705,7 +917,9 @@ def compute_ah_norm_regularizer(
     if ah_norm_weight == 0.0:
         return torch.zeros((), device=device)
     lgma_layers = [
-        module for module in model.modules() if isinstance(module, LieGeneratedMetricAttention)
+        module
+        for module in model.modules()
+        if isinstance(module, LieGeneratedMetricAttention) and module.metric_mode != "lu"
     ]
     if not lgma_layers:
         return torch.zeros((), device=device)
@@ -720,6 +934,47 @@ def compute_ah_norm_regularizer(
     return torch.stack(penalties).mean().to(device=device)
 
 
+def lu_conditioning_diagnostics(model: TinyTransformerLM) -> dict[str, object]:
+    singular_values = torch.stack(
+        [
+            metric_singular_values(block.attn.compute_metrics(dtype=torch.float64))
+            for block in model.blocks
+        ]
+    ).cpu()
+    condition_numbers = singular_values[..., 0] / singular_values[..., -1]
+    return {
+        "dtype": "float64",
+        "uses_tf32": False,
+        "formula": "largest singular value / smallest singular value",
+        "layers": [
+            {
+                "layer": layer,
+                "singular_value_min": float(values.min()),
+                "singular_value_max": float(values.max()),
+                "mean_head_condition_number": float(conditions.mean()),
+                "max_head_condition_number": float(conditions.max()),
+            }
+            for layer, (values, conditions) in enumerate(zip(singular_values, condition_numbers))
+        ],
+        "whole_model": {
+            "singular_value_min": float(singular_values.min()),
+            "singular_value_max": float(singular_values.max()),
+            "mean_head_condition_number": float(condition_numbers.mean()),
+            "max_head_condition_number": float(condition_numbers.max()),
+        },
+    }
+
+
+@contextmanager
+def evaluation_mode(module: torch.nn.Module):
+    was_training = module.training
+    module.eval()
+    try:
+        yield
+    finally:
+        module.train(was_training)
+
+
 def add_attention_diagnostics(
     report: dict[str, object],
     model: TinyTransformerLM,
@@ -731,10 +986,12 @@ def add_attention_diagnostics(
 ) -> None:
     model = unwrap_model(model)
     first_attn = model.first_attention
-    with torch.no_grad():
+    is_lu = getattr(first_attn, "metric_mode", None) == "lu"
+    report["attention_diagnostics_layer"] = 0
+    with torch.no_grad(), (evaluation_mode(first_attn) if is_lu else nullcontext()):
         generator = None
-        if isinstance(encoded, PackedTokenSplit):
-            generator = torch.Generator().manual_seed(91_337)
+        if isinstance(encoded, PackedTokenSplit) or is_lu:
+            generator = torch.Generator().manual_seed(DIAGNOSTIC_SEED)
         attention_sims = []
         centered_sims = []
         score_sims = []
@@ -824,20 +1081,23 @@ def add_attention_diagnostics(
             identity_distance = metric_distance_from_identity(metrics)
             report["metric_identity_distance_mean"] = float(identity_distance.mean())
             report["metric_identity_distance_max"] = float(identity_distance.max())
-            condition_numbers = metric_condition_number(metrics)
-            report["metric_condition_number_mean"] = float(condition_numbers.mean())
-            report["metric_condition_number_max"] = float(condition_numbers.max())
-            singular_values = metric_singular_values(metrics)
-            report["metric_singular_value_min"] = float(singular_values.min())
-            report["metric_singular_value_max"] = float(singular_values.max())
-            ah = first_attn.compute_head_generators()
-            ah_norms = ah.float().reshape(ah.shape[0], -1).norm(dim=-1)
-            report["ah_fro_norm_mean"] = float(ah_norms.mean())
-            report["ah_fro_norm_max"] = float(ah_norms.max())
+            if is_lu:
+                report["lu_metric_conditioning"] = lu_conditioning_diagnostics(model)
+            else:
+                condition_numbers = metric_condition_number(metrics)
+                report["metric_condition_number_mean"] = float(condition_numbers.mean())
+                report["metric_condition_number_max"] = float(condition_numbers.max())
+                singular_values = metric_singular_values(metrics)
+                report["metric_singular_value_min"] = float(singular_values.min())
+                report["metric_singular_value_max"] = float(singular_values.max())
+                ah = first_attn.compute_head_generators()
+                ah_norms = ah.float().reshape(ah.shape[0], -1).norm(dim=-1)
+                report["ah_fro_norm_mean"] = float(ah_norms.mean())
+                report["ah_fro_norm_max"] = float(ah_norms.max())
             cap_norms = []
             cap_active = []
             for module in model.modules():
-                if not isinstance(module, LieGeneratedMetricAttention):
+                if not isinstance(module, LieGeneratedMetricAttention) or module.metric_mode == "lu":
                     continue
                 pre_cap_norms = module.pre_cap_head_generator_symmetric_norms()
                 if pre_cap_norms is None:
@@ -888,6 +1148,17 @@ def add_attention_diagnostics(
                         ).items()
                     }
                 )
+                if is_lu:
+                    report.update(
+                        {
+                            f"metric_delta_{key}": float(value)
+                            for key, value in grouped_similarity_stats(
+                                metric_delta_similarity,
+                                first_attn.num_base_heads,
+                                first_attn.generated_heads_per_base,
+                            ).items()
+                        }
+                    )
 
 
 def save_checkpoint(
@@ -899,6 +1170,7 @@ def save_checkpoint(
     config: dict[str, object],
     args: argparse.Namespace,
     data_generator_states: list[torch.Tensor] | None = None,
+    run_manifest: dict[str, object] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     base_model = unwrap_model(model)
@@ -911,6 +1183,8 @@ def save_checkpoint(
         "args": vars(args),
         "data_generator_states": data_generator_states,
     }
+    if run_manifest is not None:
+        payload["run_manifest"] = run_manifest
     temporary_path = path.with_name(f".{path.name}.tmp")
     torch.save(payload, temporary_path)
     os.replace(temporary_path, path)
@@ -970,7 +1244,7 @@ def load_checkpoint(
     device: torch.device,
     data_generator: torch.Generator | None = None,
     data_rank: int = 0,
-) -> int:
+) -> tuple[int, dict[str, object] | None]:
     # Trainer checkpoints contain optimizer/config objects in addition to tensors.
     # PyTorch 2.6+ defaults torch.load to weights_only=True, so explicitly opt in
     # to loading the full payload created by save_checkpoint above.
@@ -1014,7 +1288,7 @@ def load_checkpoint(
         data_generator.set_state(generator_state)
     step = int(checkpoint.get("step", 0))
     print(json.dumps({"event": "checkpoint_loaded", "step": step, "path": str(path)}))
-    return step
+    return step, checkpoint.get("run_manifest")
 
 
 def gather_data_generator_states(
@@ -1084,11 +1358,8 @@ def build_report(
         "validation_perplexity": math.exp(min(validation_loss, 20.0)),
         "final_metric_diversity_loss": final_diversity_loss,
         "final_induced_metric_diversity_loss": final_induced_diversity_loss,
-        "final_ah_norm_loss": final_ah_norm_loss,
         "metric_diversity_weight": args.metric_diversity_weight,
         "induced_metric_diversity_weight": args.induced_metric_diversity_weight,
-        "ah_norm_weight": args.ah_norm_weight,
-        "ah_norm_max": args.ah_norm_max,
         "metric_diversity_squared": args.metric_diversity_squared,
         "metric_diversity_on_delta": not args.metric_diversity_on_full_metric,
         "device": str(device),
@@ -1096,6 +1367,12 @@ def build_report(
         "grad_accum_steps": args.grad_accum_steps,
         "gradient_norms": gradient_norms,
     }
+    if config["attention_type"] != "gt_mha_lu":
+        report.update(
+            final_ah_norm_loss=final_ah_norm_loss,
+            ah_norm_weight=args.ah_norm_weight,
+            ah_norm_max=args.ah_norm_max,
+        )
     add_attention_diagnostics(
         report,
         base_model,
@@ -1187,6 +1464,9 @@ def main() -> None:
             data_backend = "character_text"
 
         config = model_config_from_args(args)
+        is_lu = config["attention_type"] == "gt_mha_lu"
+        if is_lu and args.ah_norm_weight != 0.0:
+            raise SystemExit("--ah_norm_weight applies to generator-backed attention")
         seq_len = int(config["context_length"])
         base_model = TinyTransformerLM(vocab_size=tokenizer.vocab_size, **config).to(device)
         if args.enforce_paper_gt_mha:
@@ -1242,8 +1522,9 @@ def main() -> None:
             )
 
         start_step = 0
+        run_manifest = None
         if args.resume_checkpoint is not None:
-            start_step = load_checkpoint(
+            start_step, run_manifest = load_checkpoint(
                 args.resume_checkpoint,
                 base_model,
                 optimizer,
@@ -1252,6 +1533,22 @@ def main() -> None:
                 data_generator,
                 rank,
             )
+        if is_lu and main_process:
+            if args.resume_checkpoint is None:
+                run_manifest = build_lu_run_manifest(
+                    args, config, base_model, optimizer, device, world_size,
+                    tokenizer, train_encoded, val_encoded,
+                )
+            if run_manifest is not None:
+                if output_dir is not None:
+                    write_lu_run_manifest(
+                        output_dir / LU_MANIFEST_NAME, run_manifest,
+                        inherited=args.resume_checkpoint is not None,
+                    )
+                elif args.resume_checkpoint is None:
+                    print(json.dumps(
+                        {"event": "step_zero_manifest", "manifest": run_manifest}, default=str
+                    ))
         if ddp_enabled:
             dist.barrier()
 
@@ -1404,7 +1701,6 @@ def main() -> None:
                     "perplexity": math.exp(min(last_loss, 20.0)),
                     "metric_diversity_loss": last_diversity_loss,
                     "induced_metric_diversity_loss": last_induced_diversity_loss,
-                    "ah_norm_loss": last_ah_norm_loss,
                     "tokens_seen": tokens_seen,
                     "tokens_per_step": tokens_per_step,
                     "tokens_per_second": tokens_per_second,
@@ -1417,6 +1713,8 @@ def main() -> None:
                     "rank": rank,
                     "world_size": world_size,
                 }
+                if not is_lu:
+                    payload["ah_norm_loss"] = last_ah_norm_loss
                 payload.update(last_grad_norms)
                 if device.type == "cuda":
                     peak_memory = torch.cuda.max_memory_allocated(device)
@@ -1470,6 +1768,7 @@ def main() -> None:
                         config,
                         args,
                         data_generator_states,
+                        run_manifest,
                     )
                     prune_old_checkpoints(
                         output_dir,
@@ -1508,6 +1807,17 @@ def main() -> None:
             report["effective_global_batch"] = effective_global_batch
             report["data_sampling"] = "uniform_random_with_replacement"
             report["data_seed"] = args.seed
+            if is_lu:
+                report["initialization_provenance"] = (
+                    "recorded_at_step_zero" if args.resume_checkpoint is None
+                    else "inherited_from_checkpoint" if run_manifest is not None
+                    else "unavailable_in_checkpoint"
+                )
+                if output_dir is not None and run_manifest is not None:
+                    report["run_manifest"] = LU_MANIFEST_NAME
+                if args.resume_checkpoint is not None:
+                    report["resumed_from"] = str(args.resume_checkpoint)
+                    report["resume_step"] = start_step
             elapsed_training_seconds = time.perf_counter() - training_start_time
             report["elapsed_training_seconds"] = elapsed_training_seconds
             report["elapsed_training_hours"] = elapsed_training_seconds / 3600.0
@@ -1528,6 +1838,7 @@ def main() -> None:
                     config,
                     args,
                     final_data_generator_states,
+                    run_manifest,
                 )
             log_wandb(wandb_run, {"final": report}, step=args.steps)
             print(json.dumps(report, indent=2))

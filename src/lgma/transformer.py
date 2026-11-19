@@ -36,6 +36,7 @@ AttentionType = Literal[
     "gt_mha_exact",
     "gt_mha_residual",
     "gt_mha_quadratic",
+    "gt_mha_lu",
 ]
 LGMA_ATTENTION_TYPES = {
     "lgma",
@@ -127,6 +128,8 @@ def build_attention(
     fuse_base_qkv: bool = False,
     fold_value_transform_into_output: bool = False,
     sdpa_gqa_mode: str = "auto",
+    lu_init_scale: float = 0.02,
+    fuse_lu_queries: bool = True,
 ) -> nn.Module:
     if attention_type in {"mha", "reduced_mha"}:
         return StandardMultiheadAttention(
@@ -172,6 +175,32 @@ def build_attention(
             head_dim=head_dim,
             dropout=dropout,
             causal=causal,
+        )
+    if attention_type == "gt_mha_lu":
+        if num_generators != 0 or value_transform != "none":
+            raise ValueError("gt_mha_lu requires zero generators and value_transform='none'")
+        return LieGeneratedMetricAttention(
+            d_model=d_model,
+            num_heads=num_heads,
+            head_dim=head_dim,
+            num_generators=0,
+            dropout=dropout,
+            causal=causal,
+            head_generator_symmetric_cap=head_generator_symmetric_cap,
+            base_dim=base_dim,
+            value_dim=value_dim,
+            metric_mode="lu",
+            metric_beta=metric_beta,
+            metric_clip_min=metric_clip_min,
+            metric_clip_max=metric_clip_max,
+            logit_scale_mode=logit_scale_mode,
+            learn_head_temperature=learn_head_temperature,
+            value_transform="none",
+            num_base_heads=num_base_heads,
+            fuse_base_qkv=fuse_base_qkv,
+            sdpa_gqa_mode=sdpa_gqa_mode,
+            lu_init_scale=lu_init_scale,
+            fuse_lu_queries=fuse_lu_queries,
         )
     if attention_type in LGMA_ATTENTION_TYPES:
         if num_generators <= 0:
@@ -293,6 +322,8 @@ class TransformerBlock(nn.Module):
         fuse_base_qkv: bool = False,
         fold_value_transform_into_output: bool = False,
         sdpa_gqa_mode: str = "auto",
+        lu_init_scale: float = 0.02,
+        fuse_lu_queries: bool = True,
     ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
@@ -327,6 +358,8 @@ class TransformerBlock(nn.Module):
             fuse_base_qkv=fuse_base_qkv,
             fold_value_transform_into_output=fold_value_transform_into_output,
             sdpa_gqa_mode=sdpa_gqa_mode,
+            lu_init_scale=lu_init_scale,
+            fuse_lu_queries=fuse_lu_queries,
         )
         self.norm2 = nn.LayerNorm(d_model)
         hidden = mlp_ratio * d_model
@@ -396,6 +429,8 @@ class TinyTransformerLM(nn.Module):
         fuse_base_qkv: bool = False,
         fold_value_transform_into_output: bool = False,
         sdpa_gqa_mode: str = "auto",
+        lu_init_scale: float = 0.02,
+        fuse_lu_queries: bool = True,
     ) -> None:
         super().__init__()
         if vocab_size <= 0:
@@ -440,6 +475,8 @@ class TinyTransformerLM(nn.Module):
                     fuse_base_qkv=fuse_base_qkv,
                     fold_value_transform_into_output=fold_value_transform_into_output,
                     sdpa_gqa_mode=sdpa_gqa_mode,
+                    lu_init_scale=lu_init_scale,
+                    fuse_lu_queries=fuse_lu_queries,
                 )
                 for _ in range(num_layers)
             ]

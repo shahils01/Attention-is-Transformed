@@ -1,0 +1,15 @@
+{
+  "attention_type": "gt_mha_lu",
+  "d_model": 1024,
+  "num_layers": 12,
+  "num_heads": 16,
+  "head_dim": 64,
+  "num_base_heads": 4,
+  "num_generators": 0,
+  "metric_mode": "lu",
+  "value_transform": "none",
+  "lu_init_scale": 0.02,
+  "fuse_lu_queries": true,
+  "context_length": 512,
+  "dropout": 0.1
+}

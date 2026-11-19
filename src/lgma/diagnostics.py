@@ -138,12 +138,15 @@ def generator_norms(module: nn.Module) -> torch.Tensor:
 
 def grouped_gradient_norms(module: nn.Module) -> dict[str, float]:
     groups = {
-        "theta": ("theta",),
-        "generators": ("generators", "raw_metrics"),
         "q_proj": ("q_proj",),
         "k_proj": ("k_proj",),
         "v_proj": ("v_proj",),
     }
+    if getattr(module, "metric_mode", None) == "lu":
+        groups["lu_factors"] = ("lu_lower", "lu_upper", "lu_log_diag")
+    else:
+        groups["theta"] = ("theta",)
+        groups["generators"] = ("generators", "raw_metrics")
     output: dict[str, float] = {}
     for group, names in groups.items():
         squared = 0.0
