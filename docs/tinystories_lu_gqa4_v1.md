@@ -46,7 +46,7 @@ A byte-level audit split both official files at `<|endoftext|>`, stripped surrou
 
 There is **no per-arm hyperparameter search, early stopping or best-checkpoint selection** in the primary comparison. Monitoring supports fault detection and reporting the learning curve. The recipe does not estimate either architecture's best attainable loss under separate tuning. Any later tuning study needs the same search budget and selection rule for both arms.
 
-Report trainable parameters, actual sampled targets, training tokens/s and GPU-hours alongside quality. Benchmark inference separately at matched batch, context, precision and cache layout. Compare ordinary GQA4 against exported LU and apply any additional QKV packing to both. Report training parameters and exported weight storage separately.
+Report trainable parameters, actual sampled targets, training targets/s and GPU-hours alongside quality. For each arm and seed, retain the allocation IDs. Sum allocated GPUs times elapsed hours across every training allocation, including preempted attempts. The trainer's elapsed-time counter starts again on resume. Compute end-to-end throughput from retained training targets divided by total training allocation wall time and report evaluation cost separately. Benchmark inference separately at matched batch, context, precision and cache layout. Compare ordinary GQA4 against exported LU and apply any additional QKV packing to both. Report training parameters and exported weight storage separately.
 
 ## Running the frozen comparison
 
