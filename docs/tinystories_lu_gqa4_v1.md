@@ -53,6 +53,9 @@ Report trainable parameters, actual sampled targets, training targets/s and GPU-
 Use Git tag `tinystories-lu-gqa4-v1`. The protocol JSON has SHA-256 `543154cf73832ca6bd223052889de0a5a6b9d7dfef467a7f97aa651670b2d78b`. Inspect the lock and render both arms' effective launch commands before requesting a training allocation. Assign each arm and seed a unique run directory in advance, for example `$COHORT/$ARM/seed-$SEED`, and record every attempt there. Set `TRAIN` and `VALID` to the official files and `RUN` to that run directory. The launcher runs one seed on the four-GPU allocation.
 
 ```sh
+# Reference environment on DeltaAI
+module load python/miniforge3_pytorch/2.12.0
+export PYTHONNOUSERSITE=1
 python experiments/tinystories_lu_protocol.py show
 python experiments/tinystories_lu_protocol.py print-command --arm gt_mha_lu --seed 0 \
   --train-path "$TRAIN" --val-path "$VALID" --output-dir "$RUN"
