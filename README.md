@@ -34,6 +34,24 @@ python experiments/benchmark_fixed_base_lu.py --scope model --layers 12 \
   --vocab-size 230 --batch-size 4 --sequence-length 512
 ```
 
+### Deploy a fixed-base LU checkpoint
+
+For causal TinyStories inference, export once after training:
+
+```bash
+python experiments/export_fixed_base_lu.py --checkpoint runs/lu-example/checkpoint_final.pt --output lu-gqa4.pt
+```
+
+The export folds each score matrix into its base query projection and writes an ordinary GQA checkpoint. Both the training checkpoint and the exported model cache one key and value per base. Export expands the query weights to one projection per head. Folding is algebraically exact; floating-point rounding changes because the products are evaluated in a different order.
+
+For in-memory deployment, call `export_lu_model(model)` from `lgma.lu_export`. The optional `pack_gqa_model(exported)` from `lgma.packed_gqa` combines the Q/K/V projections for self-attention. It also skips construction of the causal mask when a single new query can attend to every cached position. The same packing function accepts an ordinary GQA baseline.
+
+```bash
+python experiments/benchmark_lu_deployment.py --output lu-inference-timings.json
+```
+
+The benchmark checks full-model logits for prefill and cached decoding before timing compact LU, exported LU and native GQA. It also times the packed deployment option on both exported and native GQA. Inputs and brief training updates are synthetic.
+
 ## Layout
 
 ```text
